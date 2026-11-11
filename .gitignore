@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.capacitor/
+android/
+ios/
+.env
+.DS_Store
+*.log
+www/
