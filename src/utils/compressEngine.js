@@ -194,7 +194,12 @@ export function clarityFor(widthPx) {
   if (widthPx < 950) return { key: 'ok', label: 'Readable', note: 'Most table text stays legible.' };
   return { key: 'high', label: 'Sharp', note: 'Close to the original scan detail.' };
 }
-export function readableMinimum(count) { return Math.round(Math.max(1, count) * 62); }
+export function readableMinimum(count, origKB) {
+  const n = Math.max(1, count);
+  const per = origKB ? origKB / n : 40;
+  const est = Math.round(n * Math.min(40, Math.max(6, per * 0.8)));
+  return Math.max(1, Math.min(origKB || est, est));
+}
 export async function pageImage(entry) {
   if (entry.bytes && entry.pageIdx != null) return renderPageCanvas(entry.bytes, entry.pageIdx, 3);
   return loadImage(entry.dataUrl);
@@ -297,3 +302,5 @@ export async function shareBlob(blob, filename) {
   try { const { Share } = await import('@capacitor/share'); const { Filesystem, Directory } = await import('@capacitor/filesystem'); const b64 = await blobToBase64(blob); const uri = await Filesystem.writeFile({ path: filename, data: b64, directory: Directory.Cache, recursive: true }); await Share.share({ title: filename, text: filename, url: uri.uri, dialogTitle: 'Save / Share' }); return; } catch (e) { console.warn('share fallback', e); }
   if (blob instanceof Blob) { const u = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = u; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 1000); }
 }
+
+export { compressPdfKeepText, inspectPdf } from './pdfSmart.js';

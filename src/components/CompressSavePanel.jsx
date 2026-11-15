@@ -3,7 +3,7 @@ import { renderPdfToImages } from '../utils/imageUtils.js';
 import {
   MODES, PAPER_SIZES, DPI_OPTIONS, FIT_MODES, analyzePdfPages, compressRasterPage, computeBudgets,
   pageImage, compressPdfWithMode, compressImageToTarget, dataUrlToBlob, shareBlob, dataUrlKB,
-  readableMinimum, clarityFor, measurePage, paperPixels
+  readableMinimum, clarityFor, measurePage, paperPixels, compressPdfKeepText, inspectPdf
 } from '../utils/compressEngine.js';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -77,7 +77,8 @@ export default function CompressSavePanel({ setIsLoading, setLoadProgress, setLo
   const [included, setIncluded] = useState([]);
   const [origKB, setOrigKB] = useState(0);
   const [format, setFormat] = useState('pdf');
-  const [mode, setMode] = useState('hc_hq');
+  const [mode, setMode] = useState('keep_text');
+  const [info, setInfo] = useState(null);
   const [gray, setGray] = useState(false);
   const [paper, setPaper] = useState('default');
   const [dpi, setDpi] = useState(300);
@@ -106,7 +107,7 @@ export default function CompressSavePanel({ setIsLoading, setLoadProgress, setLo
   const band = passthrough
     ? { key: 'high', label: 'Original', note: 'No recompression — bytes copied from your file.' }
     : (measure ? clarityFor(measure.px) : { key: 'ok', label: 'Measuring…', note: 'Encoding a sample to read its real width.' });
-  const minKB = readableMinimum(activeIdx.length);
+  const minKB = readableMinimum(activeIdx.length, origKB);
 
   useEffect(() => () => { if (drag.current.raf) cancelAnimationFrame(drag.current.raf); }, []);
   const syncScroll = () => { const s = stripRef.current; if (!s) return; setScrollPos(s.scrollLeft); setScrollMax(Math.max(0, s.scrollWidth - s.clientWidth)); };
@@ -145,6 +146,7 @@ export default function CompressSavePanel({ setIsLoading, setLoadProgress, setLo
           const buf = await file.arrayBuffer();
           const urls = await renderPdfToImages(file, p => setLoadProgress(Math.round(((f + p / 100) / files.length) * 100)));
           const dims = await analyzePdfPages(buf);
+          try { setInfo(await inspectPdf(buf)); } catch (err) {}
           addBatch(urls, urls.map((u, i) => ({ bytes: buf, pageIdx: dims[i].pageIdx, w: dims[i].w, h: dims[i].h, dataUrl: u })), Math.round(buf.byteLength / 1024));
         } else if (file.type.startsWith('image/')) {
           const url = await new Promise(res => { const r = new FileReader(); r.onloadend = () => res(r.result); r.readAsDataURL(file); });
@@ -176,7 +178,7 @@ export default function CompressSavePanel({ setIsLoading, setLoadProgress, setLo
         const r = await compressImageToTarget(entries[first].dataUrl, targetKB(), format === 'png' ? 'image/png' : 'image/jpeg', mode, gray, { paper, dpi, fit });
         setPreviewUrl(r.url);
         setPreviewMeta({ kb: Math.round(r.kb), px: r.px, ph: r.ph, q: Math.round(r.q * 100), exact: r.exact, framed: r.framed, band: clarityFor(r.px) });
-      } else if (passthrough) {
+      } else if (passthrough || mode === 'keep_text') {
         setPreviewUrl(images[first]);
         setPreviewMeta({ kb: 0, px: 0, ph: 0, q: 100, exact: true, framed: false, band: { key: 'high', label: 'Original quality' }, kept: true });
       } else {
@@ -197,7 +199,14 @@ export default function CompressSavePanel({ setIsLoading, setLoadProgress, setLo
     try {
       let total = 0, widths = [], kept = false, exactAll = true;
       if (!isImage) {
-        const { blob, per, passthrough: k } = await compressPdfWithMode(activeIdx.map(i => entries[i]), kb || Infinity, origKB, mode, gray, p => setLoadProgress(p));
+        let blob, per = [], k = false;
+        if (mode === 'keep_text' && entries[0] && entries[0].bytes) {
+          const r = await compressPdfKeepText(entries[0].bytes, kb || Infinity, p => setLoadProgress(p));
+          blob = r.blob; k = true;
+        } else {
+          const r = await compressPdfWithMode(activeIdx.map(i => entries[i]), kb || Infinity, origKB, mode, gray, p => setLoadProgress(p));
+          blob = r.blob; per = r.per; k = !!r.passthrough;
+        }
         total = blob.size; widths = per.map(p => p.px); kept = !!k;
         await shareBlob(blob, `compressed-${Date.now()}.pdf`);
       } else {
@@ -263,6 +272,13 @@ export default function CompressSavePanel({ setIsLoading, setLoadProgress, setLo
         </>)}
 
         <div className="mode-grid">
+          {!isImage && (
+            <button className={'mode-card' + (mode === 'keep_text' ? ' on' : '')} onClick={() => setMode('keep_text')}>
+              <span className="mode-ico">🧠</span>
+              <span className="mode-text"><span className="mode-label">Smart · keep text, shrink pictures</span>
+              <span className="mode-hint">Text stays perfect vector · only photos are re-compressed</span></span>
+              {mode === 'keep_text' && <span className="mode-dot" />}
+            </button>)}
           {Object.entries(MODES).map(([key, m]) => (
             <button key={key} className={'mode-card' + (mode === key ? ' on' : '')} onClick={() => setMode(key)}>
               <span className="mode-ico">{m.icon}</span>
@@ -340,12 +356,17 @@ export default function CompressSavePanel({ setIsLoading, setLoadProgress, setLo
             </div>
             <div className="budget-track"><div className="budget-fill" style={{ width: gaugePct + '%' }} /><span className="budget-marker" style={{ left: '73%' }} /></div>
             <div className="budget-scale"><span>150 px</span><span>readable ≈ 950 px</span><span>1300 px</span></div>
+            {!isImage && info && (
+              <div className="budget-note" style={{ marginBottom: 6 }}>
+                Your PDF: <b>{Math.round(info.shellBytes / 1024)} KB</b> text/layout + <b>{Math.round(info.imageBytes / 1024)} KB</b> pictures ({info.imageCount}).
+                {mode === 'keep_text' ? ' Smart mode keeps the text untouched and shrinks only the pictures.' : ''}
+              </div>)}
             <div className="budget-note">
               {passthrough
                 ? <span>Target covers the original — the PDF is copied <b>untouched</b>.</span>
                 : <span>{measuring ? 'Measuring a sample…' : <>Measured <b>{widthPx} px</b>{measure && measure.ph ? ` × ${measure.ph} px` : ''} at <b>{measure ? Math.round(measure.kb) : 0} KB</b>{measure && measure.framed ? (measure.exact ? ' · exact sheet size held' : ' · scaled down to meet target') : ''}</>} — {band.note}</span>}
             </div>
-            {!isImage && !passthrough && !measuring && widthPx > 0 && widthPx < 950 && (
+            {!isImage && mode !== 'keep_text' && !passthrough && !measuring && widthPx > 0 && widthPx < 950 && (
               <div className="budget-warn">
                 <span>Readable table text needs ≈ <b>{minKB} KB</b> for {activeIdx.length} pages.</span>
                 <button className="auto-btn" onClick={() => { setUnit('KB'); setSizeInput(String(minKB)); }}>Use {minKB} KB</button>
