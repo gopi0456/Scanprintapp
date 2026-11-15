@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { renderPdfToImages } from '../utils/imageUtils.js';
 import {
-  MODES, analyzePdfPages, compressRasterPage, computeBudgets, pageImage, compressPdfWithMode,
-  compressImageToTarget, dataUrlToBlob, shareBlob, dataUrlKB,
-  readableMinimum, clarityFor, measurePage, originalPdf
+  MODES, PAPER_SIZES, DPI_OPTIONS, FIT_MODES, analyzePdfPages, compressRasterPage, computeBudgets,
+  pageImage, compressPdfWithMode, compressImageToTarget, dataUrlToBlob, shareBlob, dataUrlKB,
+  readableMinimum, clarityFor, measurePage, paperPixels
 } from '../utils/compressEngine.js';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -57,7 +57,7 @@ function ZoomViewer({ src }) {
     <div className="pv-wrap">
       <div className="pv-box" ref={boxRef} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}
         onWheel={e => { e.preventDefault(); zoomAt(zRef.current + (e.deltaY < 0 ? .5 : -.5), e.clientX, e.clientY); }}>
-        <img src={src} alt="Compressed page preview" draggable={false} style={{ transform: `translate(${pan.x}px,${pan.y}px) scale(${zoom})` }} />
+        <img src={src} alt="Compressed output preview" draggable={false} style={{ transform: `translate(${pan.x}px,${pan.y}px) scale(${zoom})` }} />
         <div className="pv-hint">{zoom > 1 ? 'drag to pan · pinch to zoom' : 'pinch · double-tap · wheel'}</div>
       </div>
       <div className="pv-bar">
@@ -79,51 +79,61 @@ export default function CompressSavePanel({ setIsLoading, setLoadProgress, setLo
   const [format, setFormat] = useState('pdf');
   const [mode, setMode] = useState('hc_hq');
   const [gray, setGray] = useState(false);
+  const [paper, setPaper] = useState('default');
+  const [dpi, setDpi] = useState(300);
+  const [fit, setFit] = useState('contain');
   const [sizeInput, setSizeInput] = useState('');
   const [unit, setUnit] = useState('KB');
   const [previewUrl, setPreviewUrl] = useState(null);
   const [previewMeta, setPreviewMeta] = useState(null);
   const [result, setResult] = useState(null);
+  const [measure, setMeasure] = useState(null);
+  const [measuring, setMeasuring] = useState(false);
   const [dragIdx, setDragIdx] = useState(null);
   const [scrollPos, setScrollPos] = useState(0);
   const [scrollMax, setScrollMax] = useState(0);
   const [dropping, setDropping] = useState(false);
-  const [measure, setMeasure] = useState(null);
-  const [measuring, setMeasuring] = useState(false);
   const stripRef = useRef(null);
   const drag = useRef({ idx: null, active: false, sx: 0, lx: 0, raf: null, suppress: false });
 
+  const isImage = format !== 'pdf';
   const activeIdx = useMemo(() => included.reduce((a, v, i) => (v ? [...a, i] : a), []), [included]);
   const targetKB = () => { const v = parseFloat(sizeInput); if (!v || v <= 0) return 0; return unit === 'MB' ? Math.round(v * 1024) : Math.round(v); };
-  const effKB = targetKB() > 0 ? Math.min(targetKB(), origKB || targetKB()) : origKB;
-  const perPage = activeIdx.length ? effKB / activeIdx.length : 0;
-  const passthrough = origKB > 0 && (targetKB() === 0 || targetKB() >= origKB);
+  const sheet = useMemo(() => (isImage ? paperPixels(paper, dpi) : null), [isImage, paper, dpi]);
+  const passthrough = !isImage && origKB > 0 && (targetKB() === 0 || targetKB() >= origKB);
+  const perPage = activeIdx.length ? (targetKB() > 0 ? targetKB() : origKB) / (isImage ? 1 : activeIdx.length) : 0;
   const widthPx = measure ? measure.px : 0;
-  const band = passthrough ? { key: 'high', label: 'Original', note: 'No recompression — bytes copied straight from your file.' } : (measure ? clarityFor(measure.px) : { key: 'ok', label: 'Measuring…', note: 'Encoding page 1 to read its real width.' });
+  const band = passthrough
+    ? { key: 'high', label: 'Original', note: 'No recompression — bytes copied from your file.' }
+    : (measure ? clarityFor(measure.px) : { key: 'ok', label: 'Measuring…', note: 'Encoding a sample to read its real width.' });
   const minKB = readableMinimum(activeIdx.length);
 
   useEffect(() => () => { if (drag.current.raf) cancelAnimationFrame(drag.current.raf); }, []);
   const syncScroll = () => { const s = stripRef.current; if (!s) return; setScrollPos(s.scrollLeft); setScrollMax(Math.max(0, s.scrollWidth - s.clientWidth)); };
   useEffect(() => { syncScroll(); }, [images, previewUrl]);
+
   useEffect(() => {
     if (!activeIdx.length || passthrough) { setMeasure(null); return; }
-    let alive = true;
-    setMeasuring(true);
+    let alive = true; setMeasuring(true);
     const t = setTimeout(async () => {
       try {
-        const b = computeBudgets(activeIdx.length, targetKB(), origKB);
-        const m = await measurePage(entries[activeIdx[0]], b[0], mode, gray);
-        if (alive) setMeasure(m);
+        if (isImage) {
+          const r = await compressImageToTarget(entries[activeIdx[0]].dataUrl, targetKB(), format === 'png' ? 'image/png' : 'image/jpeg', mode, gray, { paper, dpi, fit });
+          if (alive) setMeasure({ px: r.px, kb: r.kb, q: r.q, exact: r.exact, ph: r.ph });
+        } else {
+          const b = computeBudgets(activeIdx.length, targetKB(), origKB);
+          const m = await measurePage(entries[activeIdx[0]], b[0], mode, gray);
+          if (alive) setMeasure(m);
+        }
       } catch (e) { if (alive) setMeasure(null); }
       finally { if (alive) setMeasuring(false); }
-    }, 450);
+    }, 420);
     return () => { alive = false; clearTimeout(t); };
-  }, [images, included, sizeInput, unit, mode, gray, origKB]);
+  }, [images, included, sizeInput, unit, mode, gray, origKB, format, paper, dpi, fit]);
 
   const addBatch = (urls, ents, kb) => {
     setImages(p => [...p, ...urls]); setEntries(p => [...p, ...ents]);
-    setIncluded(p => [...p, ...urls.map(() => true)]); setOrigKB(k => k + kb);
-    setResult(null);
+    setIncluded(p => [...p, ...urls.map(() => true)]); setOrigKB(k => k + kb); setResult(null);
   };
   const ingest = async (files) => {
     if (!files.length) return;
@@ -162,10 +172,19 @@ export default function CompressSavePanel({ setIsLoading, setLoadProgress, setLo
     setIsLoading(true); setLoadProgress(0); setLoadMessage('Encoding preview · identical to the saved file');
     try {
       const first = activeIdx[0];
-      const budgets = computeBudgets(activeIdx.length, targetKB(), origKB);
-      const r = compressRasterPage(await pageImage(entries[first]), budgets[0], mode, gray);
-      setPreviewUrl(r.url);
-      setPreviewMeta({ kb: Math.round(r.kb), px: r.px, q: Math.round(r.q * 100), band: clarityFor(r.px) });
+      if (isImage) {
+        const r = await compressImageToTarget(entries[first].dataUrl, targetKB(), format === 'png' ? 'image/png' : 'image/jpeg', mode, gray, { paper, dpi, fit });
+        setPreviewUrl(r.url);
+        setPreviewMeta({ kb: Math.round(r.kb), px: r.px, ph: r.ph, q: Math.round(r.q * 100), exact: r.exact, framed: r.framed, band: clarityFor(r.px) });
+      } else if (passthrough) {
+        setPreviewUrl(images[first]);
+        setPreviewMeta({ kb: 0, px: 0, ph: 0, q: 100, exact: true, framed: false, band: { key: 'high', label: 'Original quality' }, kept: true });
+      } else {
+        const b = computeBudgets(activeIdx.length, targetKB(), origKB);
+        const r = compressRasterPage(await pageImage(entries[first]), b[0], mode, gray);
+        setPreviewUrl(r.url);
+        setPreviewMeta({ kb: Math.round(r.kb), px: r.px, ph: Math.round(r.px * 1.414), q: Math.round(r.q * 100), exact: false, framed: false, band: clarityFor(r.px) });
+      }
       setLoadProgress(100);
     } catch (e) { alert('Preview failed: ' + e.message); }
     finally { setIsLoading(false); setLoadProgress(0); setLoadMessage(''); }
@@ -176,29 +195,39 @@ export default function CompressSavePanel({ setIsLoading, setLoadProgress, setLo
     const kb = targetKB();
     setIsLoading(true); setLoadProgress(0); setLoadMessage(MODES[mode].label + '…');
     try {
-      let total = 0, widths = [];
-      if (format === 'pdf') {
-        const { blob, per, passthrough: kept } = await compressPdfWithMode(activeIdx.map(i => entries[i]), kb || Infinity, origKB, mode, gray, p => setLoadProgress(p));
-        total = blob.size; widths = per.map(p => p.px);
+      let total = 0, widths = [], kept = false, exactAll = true;
+      if (!isImage) {
+        const { blob, per, passthrough: k } = await compressPdfWithMode(activeIdx.map(i => entries[i]), kb || Infinity, origKB, mode, gray, p => setLoadProgress(p));
+        total = blob.size; widths = per.map(p => p.px); kept = !!k;
         await shareBlob(blob, `compressed-${Date.now()}.pdf`);
       } else {
         const mime = format === 'png' ? 'image/png' : 'image/jpeg';
+        const ext = format === 'png' ? 'png' : 'jpg';
+        const tag = paper !== 'default' ? `${paper}-${dpi}dpi-` : '';
         for (let k = 0; k < activeIdx.length; k++) {
-          setLoadMessage(`Compressing ${k + 1}/${activeIdx.length}…`);
-          const url = await compressImageToTarget(entries[activeIdx[k]].dataUrl, kb, mime, mode, gray, p => setLoadProgress(Math.round(((k + p / 100) / activeIdx.length) * 100)));
-          const b = await dataUrlToBlob(url, `compressed-${k + 1}.${mime === 'image/png' ? 'png' : 'jpg'}`);
+          setLoadMessage(`Encoding ${k + 1}/${activeIdx.length} · ${PAPER_SIZES[paper].label}`);
+          const r = await compressImageToTarget(entries[activeIdx[k]].dataUrl, kb, mime, mode, gray, { paper, dpi, fit },
+            p => setLoadProgress(Math.round(((k + p / 100) / activeIdx.length) * 100)));
+          if (!r.exact && r.framed) exactAll = false;
+          widths.push(r.px);
+          const b = await dataUrlToBlob(r.url, `${tag}scan-${k + 1}.${ext}`);
           total += b.size; await shareBlob(b, b.name);
         }
       }
       const savedKB = Math.round(total / 1024);
       const avgW = widths.length ? Math.round(widths.reduce((a, b) => a + b, 0) / widths.length) : widthPx;
-      setResult({ savedKB, targetKB: kb, origKB, pages: activeIdx.length, mode: kept ? 'Original — no recompression' : MODES[mode].label, hit: kb > 0 ? savedKB <= kb : true, width: avgW, band: kept ? { key: 'high', label: 'Original quality' } : clarityFor(avgW), kept });
+      setResult({
+        savedKB, targetKB: kb, origKB, pages: activeIdx.length, kept, exactAll,
+        format: isImage ? `${format.toUpperCase()} · ${PAPER_SIZES[paper].label}${sheet ? ` · ${dpi} DPI` : ''}` : 'PDF · A4',
+        mode: kept ? 'Original — no recompression' : MODES[mode].label,
+        hit: kb > 0 ? savedKB <= kb : true, width: avgW, band: kept ? { key: 'high', label: 'Original quality' } : clarityFor(avgW)
+      });
       setLoadProgress(100);
     } catch (e) { alert('Save failed: ' + e.message); }
     finally { setIsLoading(false); setLoadProgress(0); setLoadMessage(''); }
   };
 
-  const clearAll = () => { setImages([]); setEntries([]); setIncluded([]); setOrigKB(0); setPreviewUrl(null); setPreviewMeta(null); setResult(null); };
+  const clearAll = () => { setImages([]); setEntries([]); setIncluded([]); setOrigKB(0); setPreviewUrl(null); setPreviewMeta(null); setResult(null); setMeasure(null); };
   const savedPct = result && result.origKB ? clamp(Math.round((result.savedKB / result.origKB) * 100), 0, 100) : 0;
   const gaugePct = passthrough ? 100 : clamp((widthPx / 1300) * 100, 3, 100);
 
@@ -211,8 +240,7 @@ export default function CompressSavePanel({ setIsLoading, setLoadProgress, setLo
           <div className="workflow-card" onClick={takePhoto}><div className="card-content"><span className="icon">📷</span><span className="label">Take Photo</span></div><div className="check-icon">✓</div></div>
           <div className="workflow-card" onClick={scanDocument}><div className="card-content"><span className="icon">✨</span><span className="label">Scan Document</span></div><div className="check-icon">✓</div></div>
           <label className={'workflow-card dropzone' + (dropping ? ' over' : '')}
-            onDragOver={e => { e.preventDefault(); setDropping(true); }}
-            onDragLeave={() => setDropping(false)}
+            onDragOver={e => { e.preventDefault(); setDropping(true); }} onDragLeave={() => setDropping(false)}
             onDrop={e => { e.preventDefault(); setDropping(false); ingest(Array.from(e.dataTransfer.files || [])); }}>
             <div className="card-content"><span className="icon">📁</span><span className="label">Upload PDFs / Photos</span></div><div className="check-icon">✓</div>
             <input type="file" accept="image/*,.pdf,application/pdf" multiple style={{ display: 'none' }} onChange={uploadFiles} /></label>
@@ -245,12 +273,13 @@ export default function CompressSavePanel({ setIsLoading, setLoadProgress, setLo
 
         <div className="passport-settings" style={{ marginTop: 12 }}>
           <div className="workflow-card settings-card"><div className="card-content"><span className="icon">💾</span>
-            <select value={format} onChange={e => setFormat(e.target.value)} className="neon-select"><option value="pdf">PDF</option><option value="jpg">JPG / JPEG</option><option value="png">PNG</option></select>
-          </div><div className="check-icon">✓</div></div>
+            <select value={format} onChange={e => { setFormat(e.target.value); setResult(null); }} className="neon-select">
+              <option value="pdf">PDF · A4 document</option><option value="jpg">JPG / JPEG image</option><option value="png">PNG image</option>
+            </select></div><div className="check-icon">✓</div></div>
 
           <div className="workflow-card settings-card"><div className="card-content" style={{ gap: 8 }}>
             <span className="icon">🎯</span>
-            <input type="number" min="1" placeholder="Target size" value={sizeInput} onChange={e => setSizeInput(e.target.value)} className="target-input" />
+            <input type="number" min="1" placeholder={isImage ? 'Size per image' : 'Total size'} value={sizeInput} onChange={e => setSizeInput(e.target.value)} className="target-input" />
             <select value={unit} onChange={e => setUnit(e.target.value)} className="target-unit"><option>KB</option><option>MB</option></select>
           </div><div className="check-icon">✓</div></div>
 
@@ -258,20 +287,67 @@ export default function CompressSavePanel({ setIsLoading, setLoadProgress, setLo
             <input type="checkbox" checked={gray} onChange={e => setGray(e.target.checked)} style={{ width: 22, height: 22 }} /></label>
         </div>
 
+        {!isImage ? (
+          <div className="pdf-auto">
+            <span className="pdf-auto-shape" />
+            <div className="pdf-auto-text">
+              <b>A4 · 210 × 297 mm</b>
+              <span>PDF output is always A4. Every page is centred and scaled to the sheet automatically — no size option needed.</span>
+            </div>
+            <span className="pdf-auto-tag">AUTO</span>
+          </div>
+        ) : (
+          <div className="paper-block">
+            <div className="paper-head">
+              <span className="paper-title">📐 Sheet size for {format.toUpperCase()}</span>
+              <span className="paper-dims">{sheet ? `${sheet.w} × ${sheet.h} px` : 'original pixels'}</span>
+            </div>
+            <div className="paper-grid">
+              {Object.entries(PAPER_SIZES).map(([k, p]) => {
+                const px = paperPixels(k, dpi);
+                return (
+                  <button key={k} className={'paper-card' + (paper === k ? ' on' : '')} onClick={() => setPaper(k)}>
+                    <span className={'paper-shape' + (k === 'default' ? ' dashed' : '')} style={{ aspectRatio: p.w ? `${p.w} / ${p.h}` : '3 / 4' }} />
+                    <span className="paper-name">{p.label}</span>
+                    <span className="paper-sub">{p.sub}</span>
+                    <span className="paper-px">{px ? `${px.w}×${px.h}` : p.note}</span>
+                  </button>);
+              })}
+            </div>
+            <div className="paper-controls">
+              <label className="pc-field"><span>Resolution</span>
+                <select value={dpi} onChange={e => setDpi(parseInt(e.target.value, 10))} disabled={paper === 'default'}>
+                  {DPI_OPTIONS.map(d => <option key={d} value={d}>{d} DPI</option>)}
+                </select></label>
+              <label className="pc-field"><span>Placement</span>
+                <select value={fit} onChange={e => setFit(e.target.value)} disabled={paper === 'default'}>
+                  {Object.entries(FIT_MODES).map(([k, f]) => <option key={k} value={k}>{f.label}</option>)}
+                </select></label>
+            </div>
+            <div className="paper-note">{paper === 'default' ? 'Keeps each image at its uploaded pixel size.' : `${FIT_MODES[fit].hint}. Exact ${sheet ? sheet.w + '×' + sheet.h : ''} px is held whenever the size target allows.`}</div>
+          </div>
+        )}
+
         {activeIdx.length > 0 && (
           <div className={'budget-card ' + band.key}>
             <div className="budget-top">
-              <span className="budget-math">{effKB} KB ÷ {activeIdx.length} pages = <b>{perPage.toFixed(1)} KB / page</b></span>
+              <span className="budget-math">
+                {isImage
+                  ? <>{targetKB() > 0 ? `${targetKB()} KB` : 'no limit'} per image · {activeIdx.length} file{activeIdx.length > 1 ? 's' : ''}</>
+                  : <>{targetKB() > 0 ? `${targetKB()} KB` : `${origKB} KB`} ÷ {activeIdx.length} pages = <b>{perPage.toFixed(1)} KB / page</b></>}
+              </span>
               <span className={'quality-badge ' + band.key}>{band.label}</span>
             </div>
-            <div className="budget-track"><div className="budget-fill" style={{ width: gaugePct + '%' }} /><span className="budget-marker" style={{ left: clamp((950 / 1300) * 100, 0, 100) + '%' }} /></div>
+            <div className="budget-track"><div className="budget-fill" style={{ width: gaugePct + '%' }} /><span className="budget-marker" style={{ left: '73%' }} /></div>
             <div className="budget-scale"><span>150 px</span><span>readable ≈ 950 px</span><span>1300 px</span></div>
-            <div className="budget-note">{passthrough
-              ? <span>Target covers the original — the file is copied <b>untouched</b>. Quality identical to your upload.</span>
-              : <span>{measuring ? 'Measuring page 1…' : <>Measured page width <b>{widthPx} px</b> at <b>{measure ? Math.round(measure.kb) : 0} KB</b></>} — {band.note}</span>}</div>
-            {!passthrough && !measuring && widthPx > 0 && widthPx < 950 && (
+            <div className="budget-note">
+              {passthrough
+                ? <span>Target covers the original — the PDF is copied <b>untouched</b>.</span>
+                : <span>{measuring ? 'Measuring a sample…' : <>Measured <b>{widthPx} px</b>{measure && measure.ph ? ` × ${measure.ph} px` : ''} at <b>{measure ? Math.round(measure.kb) : 0} KB</b>{measure && measure.framed ? (measure.exact ? ' · exact sheet size held' : ' · scaled down to meet target') : ''}</>} — {band.note}</span>}
+            </div>
+            {!isImage && !passthrough && !measuring && widthPx > 0 && widthPx < 950 && (
               <div className="budget-warn">
-                <span>For readable table text this document needs ≈ <b>{minKB} KB</b>. Your {targetKB() || effKB} KB target will be met, but fine print stays soft.</span>
+                <span>Readable table text needs ≈ <b>{minKB} KB</b> for {activeIdx.length} pages.</span>
                 <button className="auto-btn" onClick={() => { setUnit('KB'); setSizeInput(String(minKB)); }}>Use {minKB} KB</button>
                 <button className="auto-btn" onClick={() => { setUnit('KB'); setSizeInput(String(origKB)); }}>Keep original</button>
               </div>)}
@@ -284,14 +360,19 @@ export default function CompressSavePanel({ setIsLoading, setLoadProgress, setLo
             <ZoomViewer src={previewUrl} />
             {previewMeta && (
               <div className="preview-meta">
-                <span>{previewMeta.kb} KB</span><span>{previewMeta.px} px wide</span><span>quality {previewMeta.q}%</span>
-                <span className={'pm-band ' + previewMeta.band.key}>{previewMeta.band.label}</span>
+                {previewMeta.kept ? <span>Original bytes</span> : <>
+                  <span>{previewMeta.kb} KB</span>
+                  <span>{previewMeta.px} × {previewMeta.ph} px</span>
+                  <span>quality {previewMeta.q}%</span>
+                  {previewMeta.framed && <span className={previewMeta.exact ? 'pm-band ok' : 'pm-band low'}>{previewMeta.exact ? 'exact sheet' : 'scaled to fit'}</span>}
+                  <span className={'pm-band ' + previewMeta.band.key}>{previewMeta.band.label}</span>
+                </>}
               </div>)}
-            <div className="preview-note">These exact bytes are written into the file — no separate save path.</div>
+            <div className="preview-note">These exact bytes are written to the file — preview and save share one encoder.</div>
           </div>
         )}
 
-        <button className="print-btn ghost" onClick={handlePreview} disabled={!activeIdx.length}>👁️ Preview First Page</button>
+        <button className="print-btn ghost" onClick={handlePreview} disabled={!activeIdx.length}>👁️ Preview First {isImage ? 'Image' : 'Page'}</button>
 
         {result && (
           <div className={'result-card' + (result.hit ? ' hit' : ' miss')}>
@@ -300,8 +381,14 @@ export default function CompressSavePanel({ setIsLoading, setLoadProgress, setLo
             <div className="result-track"><div className="result-fill" style={{ width: savedPct + '%' }} /></div>
             <div className="result-foot">
               <span>{result.targetKB ? (result.hit ? `✓ Target ${result.targetKB} KB met` : `Above ${result.targetKB} KB target`) : 'No target set'}</span>
-              <span>{result.kept ? result.band.label : `${result.width} px avg · ${result.band.label}`}</span>
+              <span>{result.format}</span>
             </div>
+            <div className="result-foot second">
+              <span>{result.pages} {isImage ? 'image' : 'page'}{result.pages > 1 ? 's' : ''} · {result.mode}</span>
+              <span>{result.kept ? result.band.label : `${result.width} px · ${result.band.label}`}</span>
+            </div>
+            {isImage && paper !== 'default' && !result.exactAll && (
+              <div className="result-warn">Some images were scaled below {sheet ? `${sheet.w}×${sheet.h}` : 'the sheet'} to meet the size target. Raise the target or pick <b>Less compress</b> to hold exact {dpi} DPI pixels.</div>)}
           </div>
         )}
 
