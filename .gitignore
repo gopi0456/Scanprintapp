@@ -7,3 +7,10 @@ ios/
 .DS_Store
 *.log
 www/
+node_modules/
+dist/
+android/app/build/
+android/.gradle/
+android/local.properties
+*.log
+.DS_Store
