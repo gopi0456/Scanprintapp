@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { changeOwnPassword } from '../services/adminService.js';
-import { logoutLocal } from '../services/authService.js';
-import { getConversation, sendMessage } from '../services/messageService.js';
+import { performLogout } from '../services/authService.js';
 
 export default function ProfilePanel({ session, isAdmin, setView, adminMsgs, setAdminMsgs, isExpiredSession, msgText, setMsgText, scrollToTab, panelCount }) {
   const [pwCurrent, setPwCurrent] = useState('');
@@ -26,7 +25,7 @@ export default function ProfilePanel({ session, isAdmin, setView, adminMsgs, set
     else alert(r.msg);
   };
 
-  const doLogout = () => { logoutLocal(); setView('login'); };
+  const doLogout = () => { performLogout(); setView('login'); };
 
   const sendUserMsg = async () => {
     if (!msgText.trim()) return;

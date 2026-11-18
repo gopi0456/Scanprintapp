@@ -2,9 +2,14 @@ import { loadImage, trimWhitespace, PRINT_SIZES } from './imageUtils.js';
 import { blobToBase64, shareBlob } from './compressEngine.js';
 import { nativePrint } from './nativePrinter.js';
 
-export const DEFAULT_ADJ = { zoom: 1, x: 0, y: 0, rot: 0, fit: 'cover', brightness: 100, contrast: 100, crop: { x: 0, y: 0, w: 1, h: 1 } };
+export const DEFAULT_ADJ = { zoom: 1, x: 0, y: 0, rot: 0, fit: 'contain', brightness: 100, contrast: 100, crop: { x: 0, y: 0, w: 1, h: 1 } };
 
-// Global crop + transform: editing the single preview applies to ALL cells / pages
+/* ---- print resolution: 300 DPI is the base grid, everything scales from it ---- */
+let DPI = 300;
+export function setPrintDpi(d) { DPI = [150, 200, 300, 400, 600].includes(Number(d)) ? Number(d) : 300; }
+export function getPrintDpi() { return DPI; }
+const sc = v => Math.round(v * (DPI / 300));
+
 function drawAdjusted(ctx, img, x, y, w, h, adj = {}) {
   const a = { ...DEFAULT_ADJ, ...adj };
   const cr = a.crop || { x: 0, y: 0, w: 1, h: 1 };
@@ -23,16 +28,14 @@ function drawAdjusted(ctx, img, x, y, w, h, adj = {}) {
   ctx.drawImage(img, sx, sy, sw, sh, -dw / 2, -dh / 2, dw, dh);
   ctx.restore();
 }
-
 function border(ctx, x, y, w, h, dashed) {
   ctx.save();
   ctx.strokeStyle = dashed ? '#9aa3af' : '#111';
-  ctx.lineWidth = 2;
-  if (dashed) ctx.setLineDash([10, 5]);
+  ctx.lineWidth = Math.max(1, sc(2));
+  if (dashed) ctx.setLineDash([sc(10), sc(5)]);
   ctx.strokeRect(x, y, w, h);
   ctx.restore();
 }
-
 function expand(images, n) {
   if (!images.length) return [];
   const out = [];
@@ -40,9 +43,8 @@ function expand(images, n) {
   return out;
 }
 
-// ID CARD: two aligned cells with a small gap; single photo duplicated
 export function createIdCardSheets(urls, adj) {
-  const a4W = 2480, a4H = 3508, cW = 1013, cH = 638, mX = 120, mY = 120, g = 40;
+  const a4W = sc(2480), a4H = sc(3508), cW = sc(1013), cH = sc(638), mX = sc(120), mY = sc(120), g = sc(40);
   const list = urls.length === 1 ? [urls[0], urls[0]] : urls;
   return Promise.all(list.map(loadImage)).then((imgs) => {
     const sheets = [];
@@ -60,15 +62,16 @@ export function createIdCardLayout(f, b, adj) { return createIdCardSheets([f, b]
 
 export function createCardGridLayout(urls, paperSizeKey, adj) {
   const p = PRINT_SIZES[paperSizeKey];
-  const cW = 1013, cH = 638, g = 20, m = 40;
-  const cols = Math.max(1, Math.floor((p.width - 2 * m + g) / (cW + g)));
-  const rows = Math.max(1, Math.floor((p.height - 2 * m + g) / (cH + g)));
-  const ps = cols * rows, sc = Math.ceil(urls.length / ps);
+  const W = sc(p.width), H = sc(p.height);
+  const cW = sc(1013), cH = sc(638), g = sc(20), m = sc(40);
+  const cols = Math.max(1, Math.floor((W - 2 * m + g) / (cW + g)));
+  const rows = Math.max(1, Math.floor((H - 2 * m + g) / (cH + g)));
+  const ps = cols * rows, sheetCount = Math.ceil(urls.length / ps);
   return Promise.all(urls.map(loadImage)).then(imgs => {
     const pages = [];
-    for (let s = 0; s < sc; s++) {
-      const c = document.createElement('canvas'); c.width = p.width; c.height = p.height;
-      const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, p.width, p.height);
+    for (let s = 0; s < sheetCount; s++) {
+      const c = document.createElement('canvas'); c.width = W; c.height = H;
+      const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
       imgs.slice(s * ps, (s + 1) * ps).forEach((img, i) => {
         const r = Math.floor(i / cols), co = i % cols;
         const x = m + co * (cW + g), y = m + r * (cH + g);
@@ -80,83 +83,123 @@ export function createCardGridLayout(urls, paperSizeKey, adj) {
   });
 }
 
-// N-up / 4x6: small uniform gap between every tile
 function tileWhole(imgs, cols, rows, paper, adj) {
-  const m = 16, g = 16;
-  const cW = (paper.width - 2 * m - (cols - 1) * g) / cols;
-  const cH = (paper.height - 2 * m - (rows - 1) * g) / rows;
-  const ps = cols * rows, sc = Math.ceil(imgs.length / ps);
+  const W = sc(paper.width), H = sc(paper.height);
+  const m = sc(16), g = sc(16);
+  const cW = (W - 2 * m - (cols - 1) * g) / cols;
+  const cH = (H - 2 * m - (rows - 1) * g) / rows;
+  const ps = cols * rows, sheetCount = Math.ceil(imgs.length / ps);
   const pages = [];
-  for (let s = 0; s < sc; s++) {
-    const c = document.createElement('canvas'); c.width = paper.width; c.height = paper.height;
-    const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, paper.width, paper.height);
+  for (let s = 0; s < sheetCount; s++) {
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
     imgs.slice(s * ps, (s + 1) * ps).forEach((img, i) => {
       const r = Math.floor(i / cols), co = i % cols;
-      const x = m + co * (cW + g), y = m + r * (cH + g);
-      drawAdjusted(ctx, trimWhitespace(img), x, y, cW, cH, adj);
+      drawAdjusted(ctx, img, m + co * (cW + g), m + r * (cH + g), cW, cH, adj);
     });
     pages.push(c.toDataURL('image/jpeg', 0.92));
   }
   return pages;
 }
-
 export function createNUpLayout(urls, arg2, arg3, adj) {
   let pp, pk;
   if (typeof arg2 === 'number') { pp = arg2; pk = arg3; } else { pk = arg2; pp = arg3; }
-  const g = { 1: [1,1], 2: [1,2], 4: [2,2], 6: [2,3], 8: [2,4], 9: [3,3], 16: [4,4] };
+  const g = { 1: [1, 1], 2: [1, 2], 4: [2, 2], 6: [2, 3], 8: [2, 4], 9: [3, 3], 16: [4, 4] };
   const [c, r] = g[pp] || [1, 1];
   return Promise.all(urls.map(loadImage)).then(imgs => tileWhole(imgs, c, r, PRINT_SIZES[pk] || PRINT_SIZES['A4'], adj));
 }
-
 export function createFrontBackNUpSheets(urls, pp, pk, adj) {
   const p = PRINT_SIZES[pk] || PRINT_SIZES['A4'];
   return Promise.all(urls.map(loadImage)).then(imgs => tileWhole(imgs, 2, Math.max(1, Math.round(pp / 2)), p, adj));
 }
 
-export function createPassportLayout(dataUrls, perPage, cols, pk, adj) {
+/* PASSPORT: fixed 6 across the top line, 35×45 mm cells, white padding on 4 sides, multi-sheet */
+function sheetMetrics(paper, cellWmm, cellHmm, grid) {
+  const W = sc(paper.width), H = sc(paper.height);
+  const toMm = v => { const n = parseFloat(v); return /in$/.test(String(v)) ? n * 25.4 : n; };
+  const sheetWmm = toMm(paper.cssWidth), sheetHmm = toMm(paper.cssHeight);
+  const isoCols = Math.max(1, Math.floor(sheetWmm / cellWmm + 1e-4));
+  const isoRows = Math.max(1, Math.floor(sheetHmm / cellHmm + 1e-4));
+  const g = grid || {};
+  const fill = g.fill !== false;
+  const cols = fill ? Math.max(1, Math.min(24, g.cols || isoCols)) : isoCols;
+  const rows = fill ? Math.max(1, Math.min(24, g.rows || isoRows)) : isoRows;
+  const CW = fill ? Math.floor(W / cols) : Math.floor(W * cellWmm / sheetWmm);
+  const CH = fill ? Math.floor(H / rows) : Math.floor(H * cellHmm / sheetHmm);
+  return { W, H, cols, rows, CW, CH, perSheet: cols * rows, fill, sheetWmm, sheetHmm };
+}
+
+function newSheetCanvas(W, H) {
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+  return { c, ctx };
+}
+
+function stampCell(ctx, img, x, y, cw, ch, pad, adj) {
+  ctx.fillStyle = '#fff'; ctx.fillRect(x, y, cw, ch);
+  drawAdjusted(ctx, img, x + pad, y + pad, cw - 2 * pad, ch - 2 * pad, adj);
+  border(ctx, x + pad, y + pad, cw - 2 * pad, ch - 2 * pad, true);
+}
+
+export function createPassportLayout(dataUrls, perPage, colsArg, pk, adj, padMm, grid) {
   const list = Array.isArray(dataUrls) ? dataUrls : [dataUrls];
-  const n = Math.max(1, perPage || 1), c = Math.max(1, cols || 1);
+  const paper = PRINT_SIZES[pk] || PRINT_SIZES['A4'];
+  const m = sheetMetrics(paper, 35, 45, grid);
+  const PAD = Math.max(0, Math.round((padMm == null ? 1 : padMm) / 25.4 * DPI));
+  const n = Math.max(1, perPage || m.perSheet);
   const filled = expand(list, n);
   return Promise.all(filled.map(loadImage)).then(imgs => {
-    const p = PRINT_SIZES[pk];
-    const rows = Math.ceil(n / c);
-    const m = 20, g = 12;
-    const cW = (p.width - 2 * m - (c - 1) * g) / c;
-    const cH = (p.height - 2 * m - (rows - 1) * g) / rows;
-    const canvas = document.createElement('canvas'); canvas.width = p.width; canvas.height = p.height;
-    const ctx = canvas.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, p.width, p.height);
-    for (let i = 0; i < n; i++) {
-      const r = Math.floor(i / c), co = i % c;
-      const x = m + co * (cW + g), y = m + r * (cH + g);
-      drawAdjusted(ctx, imgs[i], x, y, cW, cH, adj); border(ctx, x, y, cW, cH, true);
+    const sheets = [];
+    for (let start = 0; start < n; start += m.perSheet) {
+      const count = Math.min(m.perSheet, n - start);
+      const { c, ctx } = newSheetCanvas(m.W, m.H);
+      for (let i = 0; i < count; i++) {
+        const r = Math.floor(i / m.cols), co = i % m.cols;
+        stampCell(ctx, imgs[start + i], co * m.CW, r * m.CH, m.CW, m.CH, PAD, adj);
+      }
+      sheets.push(c.toDataURL('image/jpeg', 0.92));
     }
-    return [canvas.toDataURL('image/jpeg', 0.92)];
+    return sheets;
   });
 }
 
 function fitAdjusted(dataUrl, cfg, adj) {
   return loadImage(dataUrl).then(img => {
-    const trimmed = trimWhitespace(img);
-    const c = document.createElement('canvas'); c.width = cfg.width; c.height = cfg.height;
-    const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
-    drawAdjusted(ctx, trimmed, 0, 0, c.width, c.height, adj);
-    return c.toDataURL('image/jpeg', 0.92);
+    const W = sc(cfg.width), H = sc(cfg.height);
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+    drawAdjusted(ctx, img, 0, 0, W, H, adj);
+    return c.toDataURL('image/jpeg', 0.88);
   });
 }
 
 export async function composePrintPages(images, o) {
+  if (o.dpi) setPrintDpi(o.dpi);
   const adj = o.adj || {};
   const cfg = PRINT_SIZES[o.sizeKey];
   const copies = Math.max(1, o.copies || 1);
   let pages = [], cssW = cfg.cssWidth, cssH = cfg.cssHeight;
   const repeat = (arr) => { for (let k = 0; k < copies; k++) pages.push(...arr); };
+  const paper = o.passportPaper || 'A4';
+  const pad = o.passportPad == null ? 1 : o.passportPad;
 
   if (cfg.isIdCard) {
     repeat(await createIdCardSheets(images, adj));
     cssW = PRINT_SIZES['A4'].cssWidth; cssH = PRINT_SIZES['A4'].cssHeight;
   } else if (cfg.isPassport) {
-    repeat(await createPassportLayout(images, o.passportPerPage, o.passportCols, o.passportPaper, adj));
-    cssW = PRINT_SIZES[o.passportPaper].cssWidth; cssH = PRINT_SIZES[o.passportPaper].cssHeight;
+    if (o.mixStamp && o.mixStamp !== 'none' && (o.stampPerPage || 0) > 0) {
+      const dims = o.mixStamp === '25x30' ? [25, 30] : [20, 25];
+      repeat(await createMixLayout(images, o.passportPerPage, o.stampPerPage, paper, adj, pad, dims[0], dims[1], o.grid));
+    } else {
+      repeat(await createPassportLayout(images, o.passportPerPage, o.grid && o.grid.cols, paper, adj, pad, o.grid));
+    }
+    cssW = PRINT_SIZES[paper].cssWidth; cssH = PRINT_SIZES[paper].cssHeight;
+  } else if (cfg.isStamp) {
+    repeat(await createStampLayout(images, o.stampPerPage || o.passportPerPage, paper, adj, pad, cfg.cellW, cfg.cellH, o.grid));
+    cssW = PRINT_SIZES[paper].cssWidth; cssH = PRINT_SIZES[paper].cssHeight;
+  } else if (cfg.isMix) {
+    repeat(await createMixLayout(images, o.passportPerPage || 6, o.stampPerPage || 20, paper, adj, pad));
+    cssW = PRINT_SIZES[paper].cssWidth; cssH = PRINT_SIZES[paper].cssHeight;
   } else if (o.sizeKey === 'A4' && o.sideMode === 'double') {
     const per = Math.max(2, 2 * Math.round((o.pagesPerSheet || 2) / 2));
     const total = Math.max(images.length, per);
@@ -178,20 +221,19 @@ function toPt(v) {
   if (/in$/.test(v)) return parseFloat(v) * 72;
   return parseFloat(v);
 }
-
 async function toJpegPages(pages) {
   return Promise.all(pages.map(async (p) => {
     const img = await loadImage(p);
-    const MAX = 1600;
+    const MAX = sc(1600);           // fast print path; still scales with chosen DPI
     let w = img.width, h = img.height;
     if (Math.max(w, h) > MAX) { const s = MAX / Math.max(w, h); w = Math.round(w * s); h = Math.round(h * s); }
     const c = document.createElement('canvas'); c.width = w; c.height = h;
     const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(img, 0, 0, w, h);
-    return c.toDataURL('image/jpeg', 0.85);
+    return c.toDataURL('image/jpeg', 0.88);
   }));
 }
-
 export async function buildPdfBlob(pages, widthCSS, heightCSS) {
   const { jsPDF } = await import('jspdf');
   const jpeg = await toJpegPages(pages);
@@ -203,7 +245,6 @@ export async function buildPdfBlob(pages, widthCSS, heightCSS) {
   }
   return pdf.output('blob');
 }
-
 function iframePrint(pages, widthCSS, heightCSS) {
   return new Promise((resolve) => {
     const old = document.getElementById('scanprint-print-frame');
@@ -225,11 +266,10 @@ function iframePrint(pages, widthCSS, heightCSS) {
     doc.close();
     setTimeout(() => {
       try { iframe.contentWindow.focus(); iframe.contentWindow.print(); } catch (e) {}
-      setTimeout(() => { if (iframe.parentNode) iframe.parentNode.removeChild(iframe); resolve(); }, 1000);
+      setTimeout(() => { if (iframe.parentNode) iframe.removeChild(iframe); resolve(); }, 1000);
     }, 600);
   });
 }
-
 export async function printImage(pages, widthCSS, heightCSS) {
   const jpeg = await toJpegPages(pages);
   const blob = await buildPdfBlob(jpeg, widthCSS, heightCSS);
@@ -238,4 +278,77 @@ export async function printImage(pages, widthCSS, heightCSS) {
   try { await shareBlob(blob, 'scanprint-' + Date.now() + '.pdf'); return; }
   catch (e) { console.warn('share failed', e); }
   await iframePrint(jpeg, widthCSS, heightCSS);
+}
+
+/* ── STAMP 25×30 mm, 8 across A4 ── */
+export function createStampLayout(dataUrls, perPage, pk, adj, padMm, cellWmm, cellHmm, grid) {
+  const list = Array.isArray(dataUrls) ? dataUrls : [dataUrls];
+  const paper = PRINT_SIZES[pk] || PRINT_SIZES['A4'];
+  const m = sheetMetrics(paper, cellWmm || 20, cellHmm || 25, grid);
+  const PAD = Math.max(0, Math.round((padMm == null ? 0.5 : padMm) / 25.4 * DPI));
+  const n = Math.max(1, perPage || m.perSheet);
+  const filled = expand(list, n);
+  return Promise.all(filled.map(loadImage)).then(imgs => {
+    const sheets = [];
+    for (let start = 0; start < n; start += m.perSheet) {
+      const count = Math.min(m.perSheet, n - start);
+      const { c, ctx } = newSheetCanvas(m.W, m.H);
+      for (let i = 0; i < count; i++) {
+        const r = Math.floor(i / m.cols), co = i % m.cols;
+        stampCell(ctx, imgs[start + i], co * m.CW, r * m.CH, m.CW, m.CH, PAD, adj);
+      }
+      sheets.push(c.toDataURL('image/jpeg', 0.92));
+    }
+    return sheets;
+  });
+}
+
+/* ── MIXED: passport rows (6×35×45) then stamp rows (8×25×30), packed per sheet ── */
+export function createMixLayout(dataUrls, passportCount, stampCount, pk, adj, padMm, stampWmm, stampHmm, grid) {
+  const list = Array.isArray(dataUrls) ? dataUrls : [dataUrls];
+  const paper = PRINT_SIZES[pk] || PRINT_SIZES['A4'];
+  const W = sc(paper.width), H = sc(paper.height);
+  const toMm = v => { const n = parseFloat(v); return /in$/.test(String(v)) ? n * 25.4 : n; };
+  const sheetWmm = toMm(paper.cssWidth), sheetHmm = toMm(paper.cssHeight);
+  const SW = stampWmm || 20, SH = stampHmm || 25;
+  const g = grid || {};
+  const wantFill = g.fill !== false;
+  const pIso = Math.max(1, Math.floor(sheetWmm / 35 + 1e-4));
+  const sIso = Math.max(1, Math.floor(sheetWmm / SW + 1e-4));
+  const pCols = wantFill ? Math.max(1, Math.min(24, g.cols || pIso)) : pIso;
+  const sCols = sIso;
+  const nP = Math.max(0, passportCount == null ? pCols : passportCount);
+  const nS = Math.max(0, stampCount == null ? 0 : stampCount);
+  const pRows = Math.ceil(nP / pCols), sRows = Math.ceil(nS / sCols);
+  const P_W = wantFill ? Math.floor(W / pCols) : Math.floor(W * 35 / sheetWmm);
+  const S_W = wantFill ? Math.floor(W / sCols) : Math.floor(W * SW / sheetWmm);
+  const isoP_H = Math.floor(H * 45 / sheetHmm), isoS_H = Math.floor(H * SH / sheetHmm);
+  const natural = pRows * isoP_H + sRows * isoS_H;
+  const onePage = wantFill && natural > 0 && natural <= H;
+  let P_H = isoP_H, S_H = isoS_H;
+  if (onePage) { const k = H / natural; P_H = Math.floor(isoP_H * k); S_H = Math.floor(isoS_H * k); }
+  const PAD = Math.max(0, Math.round((padMm == null ? 1 : padMm) / 25.4 * DPI));
+  const total = Math.max(1, nP + nS);
+  const filled = expand(list, total);
+
+  return Promise.all(filled.map(loadImage)).then(imgs => {
+    const sheets = [];
+    let cur = newSheetCanvas(W, H), y = 0, idx = 0;
+    const roll = () => { sheets.push(cur.c.toDataURL('image/jpeg', 0.92)); cur = newSheetCanvas(W, H); y = 0; };
+
+    for (let r = 0; r < pRows; r++) {
+      if (y + P_H > H) roll();
+      const inRow = Math.min(pCols, nP - r * pCols);
+      for (let co = 0; co < inRow; co++) { stampCell(cur.ctx, imgs[idx], co * P_W, y, P_W, P_H, PAD, adj); idx++; }
+      y += P_H;
+    }
+    for (let r = 0; r < sRows; r++) {
+      if (y + S_H > H) roll();
+      const inRow = Math.min(sCols, nS - r * sCols);
+      for (let co = 0; co < inRow; co++) { stampCell(cur.ctx, imgs[idx], co * S_W, y, S_W, S_H, PAD, adj); idx++; }
+      y += S_H;
+    }
+    sheets.push(cur.c.toDataURL('image/jpeg', 0.92));
+    return sheets;
+  });
 }

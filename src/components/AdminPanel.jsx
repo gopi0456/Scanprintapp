@@ -1,3 +1,4 @@
+import AdminUpdatesPanel from './AdminUpdatesPanel.jsx';
 import { useState, useEffect } from 'react';
 import {
   listUsers, addUser, deleteUser, changePassword, setExpiry, updateUserDetails
@@ -5,6 +6,7 @@ import {
 import { getConversation, listAdminConversations, sendMessage } from '../services/messageService.js';
 
 export default function AdminPanel() {
+  const [updOpen, setUpdOpen] = useState(false);
   const [users, setUsers] = useState([]);
   const [newUser, setNewUser] = useState({ u: '', p: '', f: '', l: '', exp: '', role: 'user' });
   const [conversations, setConversations] = useState([]);
@@ -72,6 +74,8 @@ export default function AdminPanel() {
 
   return (
     <div className="panel">
+      <button className="upd-menu-chip" style={{ width: '100%', justifyContent: 'center', padding: '12px', marginBottom: '10px' }} onClick={() => setUpdOpen(true)}>📢 App Updates — publish APK / news</button>
+      {updOpen && <AdminUpdatesPanel onClose={() => setUpdOpen(false)} />}
       <div className="glass-frame">
         <div className="logo-chip">🛡️</div>
         <div className="main-card">

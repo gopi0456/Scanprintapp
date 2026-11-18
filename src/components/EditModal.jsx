@@ -103,6 +103,11 @@ export default function EditModal({ open, onClose, adj, setAdj, anchor, setAncho
           ))}
         </div>
         <div className="em-mode-hint">{mode === 'crop' ? 'Drag the green box over the part you want to KEEP — only that area is saved, on every page.' : mode === 'size' ? 'Drag any corner to zoom the image bigger / smaller; drag inside to move it.' : 'This is exactly what will print / save.'}</div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                <button className="em-chip" onClick={() => setAdj(a => ({ ...a, fit: 'cover', zoom: 1, x: 0, y: 0 }))}>⤢ Fill frame</button>
+                <button className="em-chip" onClick={() => setAdj(a => ({ ...a, fit: 'contain', zoom: 1, x: 0, y: 0 }))}>🖼 Fit inside frame</button>
+                <button className="em-chip" onClick={() => setAdj(a => ({ ...a, zoom: 1, x: 0, y: 0, rot: 0 }))}>↺ Reset position</button>
+              </div>
         <div className="em-stage" style={{ aspectRatio: mode === 'preview' ? (aspectW + ' / ' + aspectH) : (dims.w + ' / ' + dims.h) }}>
           {mode === 'preview' ? <img src={preview} alt="preview" /> : (
             <div className="em-box" ref={boxRef} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}>
@@ -129,7 +134,7 @@ export default function EditModal({ open, onClose, adj, setAdj, anchor, setAncho
         <div className="em-tools">
           <div className="em-block">
             <div className="em-block-title">Rotate</div>
-            <div className="em-chips">{[0, 45, 90, 135, 180].map(d => <button key={d} className={'em-chip' + (adj.rot === d ? ' on' : '')} onClick={() => set('rot', d)}>{d}°</button>)}</div>
+            <div className="em-chips">{[0, 45, 90, 135, 180, 225, 270, 315, 360].map(d => <button key={d} className={'em-chip' + (adj.rot === d ? ' on' : '')} onClick={() => set('rot', d)}>{d}°</button>)}</div>
           </div>
           <div className="em-block">
             <div className="em-block-title">Fixed anchor (drag keeps this point still)</div>

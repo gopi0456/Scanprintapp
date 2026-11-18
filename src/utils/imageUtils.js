@@ -7,7 +7,9 @@ export const PRINT_SIZES = {
   'ID Card (CR80)': { width: 1013, height: 638, cssWidth: '85.6mm', cssHeight: '54mm', isIdCard: true },
   'A4': { width: 2480, height: 3508, cssWidth: '210mm', cssHeight: '297mm' },
   '4x6 Photo': { width: 1200, height: 1800, cssWidth: '4in', cssHeight: '6in' },
-  'Passport (2x2)': { width: 600, height: 600, cssWidth: '2in', cssHeight: '2in', isPassport: true }
+  'Passport (2x2)': { width: 600, height: 600, cssWidth: '2in', cssHeight: '2in', isPassport: true },
+  'Stamp (20x25)': { width: 2480, height: 3508, cssWidth: '210mm', cssHeight: '297mm', isStamp: true, cellW: 20, cellH: 25 },
+  'Stamp (25x30)': { width: 2480, height: 3508, cssWidth: '210mm', cssHeight: '297mm', isStamp: true, cellW: 25, cellH: 30 }
 };
 
 export function cssToMm(v) {

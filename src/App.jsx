@@ -1,5 +1,6 @@
+import UpdatesEntry from './components/UpdatesEntry.jsx';
 import { useState, useRef, useEffect, lazy, Suspense } from 'react';
-import { ensureAdmin, login, registerUser, verifySession, logoutLocal } from './services/authService.js';
+import { ensureAdmin, login, registerUser, verifySession, logoutLocal, performLogout } from './services/authService.js';
 import { getUnreadCount, markRead } from './services/messageService.js';
 import './App.css';
 
@@ -13,6 +14,19 @@ const SEED_FLAG = 'scanprint_seeded';
 
 function App() {
   const [view, setView] = useState('boot');
+  /* __safeRestore__: load session from storage on cold start, no view changes */
+  useEffect(() => {
+    try {
+      const keys = ['scanprint_session', 'session', 'gfs_session', 'scanprint_session_v1'];
+      for (const k of keys) {
+        const raw = localStorage.getItem(k);
+        if (!raw) continue;
+        const o = JSON.parse(raw);
+        if (o && o.username) { setSession(o); break; }
+      }
+    } catch (e) { console.warn('session restore', e); }
+  }, []);
+
   const [bootError, setBootError] = useState('');
   const [session, setSession] = useState(null);
   const [isExpiredSession, setIsExpiredSession] = useState(false);
@@ -72,7 +86,7 @@ function App() {
           const again = await verifySession();
           if (again.status === 'other-device') {
             alert('Logged in on another device.');
-            logoutLocal(); setSession(null); setView('login');
+            performLogout(); setSession(null); setView('login');
           }
         }
         // 'none' / network error while running: stay logged in (cold boot handles login)
@@ -222,7 +236,8 @@ function App() {
         <div className="header-brand">Good Friend Service</div>
         <div className="header-row2">
           <div className="header-greet">Hi, {session.first_name || ''} {session.last_name || ''} 👋</div>
-          <div className="header-avatar">
+          <UpdatesEntry isAdmin={isAdmin} />
+      <div className="header-avatar">
             {initials}
             {unread > 0 && <span className="msg-badge">{unread}</span>}
           </div>

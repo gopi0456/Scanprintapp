@@ -22,10 +22,22 @@ export default function ScanPrintPanel({ isLoading, setIsLoading, loadProgress, 
   const [selectedSize, setSelectedSize] = useState('ID Card (CR80)');
   const [sideMode, setSideMode] = useState('single');
   const [passportPaperSize, setPassportPaperSize] = useState('A4');
-  const [passportCols, setPassportCols] = useState(4);
-  const [passportPerPage, setPassportPerPage] = useState(8);
+  const [passportCols, setPassportCols] = useState(6);
+  const [passportPerPage, setPassportPerPage] = useState(36);
+  const [passportPad, setPassportPad] = useState(1);
+  const [stampPad, setStampPad] = useState(0.5);
+  const [mixedMode, setMixedMode] = useState(false);
+  const [stampMode, setStampMode] = useState(false);
+  const [stampPerPage, setStampPerPage] = useState(24);
+  const [mixStamp, setMixStamp] = useState('none');
+  const [gridCols, setGridCols] = useState(6);
+  const [gridRows, setGridRows] = useState(6);
+  const [fillSheet, setFillSheet] = useState(true);
+  const [previewPages, setPreviewPages] = useState([]);
+  const [previewIdx, setPreviewIdx] = useState(0);
   const [pagesPerSheet, setPagesPerSheet] = useState(1);
   const [copies, setCopies] = useState(1);
+  const [printDpi, setPrintDpi] = useState(300);
   const [rangeInput, setRangeInput] = useState('');
   const [adj, setAdj] = useState({ ...DEFAULT_ADJ });
   const [anchor, setAnchor] = useState('c');
@@ -33,31 +45,41 @@ export default function ScanPrintPanel({ isLoading, setIsLoading, loadProgress, 
   const [previewMeta, setPreviewMeta] = useState('');
   const [editOpen, setEditOpen] = useState(false);
   const debounceRef = useRef(null);
+  const renderToken = useRef(0);
 
   const isFullPageMode = selectedSize === 'A4' || selectedSize === '4x6 Photo';
   const isDoubleA4 = selectedSize === 'A4' && sideMode === 'double';
   const activeImages = printImages.filter((_, i) => included[i]);
-  const previewPageKey = selectedSize === 'ID Card (CR80)' ? 'A4' : (selectedSize === 'Passport (2x2)' ? passportPaperSize : selectedSize);
+  const previewPageKey = (selectedSize === 'ID Card (CR80)' || selectedSize === 'Passport (2x2)' || selectedSize.startsWith('Stamp')) ? (selectedSize === 'ID Card (CR80)' ? 'A4' : passportPaperSize) : selectedSize;
   const pwMm = cssToMm(PRINT_SIZES[previewPageKey].cssWidth);
   const phMm = cssToMm(PRINT_SIZES[previewPageKey].cssHeight);
 
-  const opts = (forPreview) => ({ sizeKey: selectedSize, sideMode, passportPaper: passportPaperSize, passportCols, passportPerPage, pagesPerSheet, copies: forPreview ? 1 : copies, adj });
+  const opts = (forPreview) => ({ sizeKey: selectedSize, sideMode, passportPaper: passportPaperSize, passportCols, passportPerPage, passportPad, stampPad, stampPerPage, mixStamp, stampMode, mixedMode, pagesPerSheet, copies: forPreview ? 1 : copies, dpi: forPreview ? Math.min(printDpi, 150) : printDpi, adj, grid: { cols: gridCols, rows: gridRows, fill: fillSheet } });
 
   useEffect(() => {
     if (activeImages.length === 0) { setPreview(null); return; }
     clearTimeout(debounceRef.current);
+    const token = ++renderToken.current;
     debounceRef.current = setTimeout(async () => {
       try {
         const idx = parseRange(rangeInput, activeImages.length);
         const imgs = idx.map(i => activeImages[i]);
-        const limit = selectedSize === 'ID Card (CR80)' ? 2 : Math.max(2, pagesPerSheet);
+        const limit = selectedSize === 'ID Card (CR80)' ? 2 : (selectedSize.startsWith('Stamp') || selectedSize === 'Passport (2x2)') ? 4 : Math.max(2, pagesPerSheet);
         const { pages } = await composePrintPages(imgs.slice(0, limit), opts(true));
+        if (token !== renderToken.current) return;
+        setPreviewPages(pages);
+        setPreviewIdx(0);
         setPreview(pages[0] || null);
-        setPreviewMeta(selectedSize === 'ID Card (CR80)' ? 'Side-by-side • edits apply to every sheet' : 'First page • edits apply to all ' + imgs.length + ' pages');
+        setPreviewMeta(selectedSize === 'ID Card (CR80)' ? 'Side-by-side • edits apply to every sheet' : (pages.length > 1 ? pages.length + ' sheets • ' : '1 sheet • ') + 'edits apply to all ' + imgs.length + ' pages');
       } catch (e) { console.warn('preview', e); }
-    }, 140);
+    }, 120);
     return () => clearTimeout(debounceRef.current);
-  }, [printImages, included, selectedSize, sideMode, passportPaperSize, passportCols, passportPerPage, pagesPerSheet, rangeInput, adj]);
+  }, [printImages, included, selectedSize, sideMode, passportPaperSize, passportCols, passportPerPage, passportPad, stampPad, stampPerPage, mixStamp, stampMode, mixedMode, pagesPerSheet, printDpi, rangeInput, adj, gridCols, gridRows, fillSheet]);
+
+  /* __sheetSync__ */
+  useEffect(() => {
+    if (previewPages.length) setPreview(previewPages[Math.min(previewIdx, previewPages.length - 1)] || null);
+  }, [previewIdx, previewPages]);
 
   const set = (k, v) => setAdj(a => ({ ...a, [k]: v }));
   const applyZoom = (nz) => setAdj(a => { const z = clamp(nz, 0.2, 4); const [ax, ay] = ANCHORS[anchor]; return { ...a, zoom: r2(z), x: Math.round(clamp(a.x + ax * (a.zoom - z) * 100, -60, 60)), y: Math.round(clamp(a.y + ay * (a.zoom - z) * 100, -60, 60)) }; });
@@ -120,75 +142,359 @@ export default function ScanPrintPanel({ isLoading, setIsLoading, loadProgress, 
           <label className="workflow-card"><div className="card-content"><span className="icon">📁</span><span className="label">Upload Photo or PDF</span></div><div className="check-icon">✓</div><input type="file" accept="image/*,.pdf,application/pdf" style={{ display: 'none' }} onChange={uploadFile} /></label>
         </div>
 
-        {printImages.length > 0 && (<>
-          <div className="count-bar"><span className="count-chip">📄 {activeImages.length}/{printImages.length} selected</span>
-            <button className="clear-btn" onClick={() => { setPrintImages([]); setIncluded([]); setRangeInput(''); setPreview(null); }}>Clear All</button></div>
-          <div className="thumb-strip">{printImages.map((img, i) => (
-            <button key={i} className={'thumb' + (included[i] ? '' : ' off')} onClick={() => toggle(i)}>
-              <img src={img} alt={'p' + (i + 1)} /><span className="thumb-mark">{included[i] ? '✓' : '✕'}</span><span className="thumb-num">{i + 1}</span>
-            </button>))}</div>
-          <div className="thumb-hint">Tap to include / exclude — remaining pages re-arrange automatically.</div>
-        </>)}
+        {printImages.length > 0 && (
+          <div>
+            <div className="count-bar"><span className="count-chip">📄 {activeImages.length}/{printImages.length} selected</span>
+              <button className="clear-btn" onClick={() => { setPrintImages([]); setIncluded([]); setRangeInput(''); setPreview(null); }}>Clear All</button></div>
+            <div className="thumb-strip">{printImages.map((img, i) => (
+              <button key={i} className={'thumb' + (included[i] ? '' : ' off')} onClick={() => toggle(i)}>
+                <img src={img} alt={'p' + (i + 1)} /><span className="thumb-mark">{included[i] ? '✓' : '✕'}</span><span className="thumb-num">{i + 1}</span>
+              </button>))}</div>
+            <div className="thumb-hint">Tap to include / exclude — remaining pages re-arrange automatically.</div>
+          </div>
+        )}
 
         {activeImages.length > 1 && (
           <div className="passport-settings" style={{ marginTop: 0, marginBottom: '14px' }}>
-            <div className="workflow-card settings-card"><div className="card-content" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '4px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}><span className="icon">🔖</span>
-                <input className="neon-input wide" placeholder="All pages (e.g. 1-3, 5, 7-9)" value={rangeInput} onChange={e => setRangeInput(e.target.value)} /></div>
-              <span className="range-hint">Leave empty = all selected</span>
-            </div><div className="check-icon">✓</div></div>
+            <div className="workflow-card settings-card">
+              <div className="card-content" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '4px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}><span className="icon">🔖</span>
+                  <input className="neon-input wide" placeholder="All pages (e.g. 1-3, 5, 7-9)" value={rangeInput} onChange={e => setRangeInput(e.target.value)} /></div>
+                <span className="range-hint">Leave empty = all selected</span>
+              </div>
+              <div className="check-icon">✓</div>
+            </div>
           </div>
         )}
 
         <div className="workflow-cards" style={{ marginBottom: 0 }}>
-          <div className="workflow-card settings-card"><div className="card-content"><span className="icon">📄</span>
-            <select value={selectedSize} onChange={e => setSelectedSize(e.target.value)} className="neon-select">{Object.keys(PRINT_SIZES).map(s => <option key={s} value={s}>{s}</option>)}</select>
-          </div><div className="check-icon">✓</div></div>
+          <div className="workflow-card settings-card">
+            <div className="card-content"><span className="icon">📄</span>
+              <select value={selectedSize} onChange={e => { const v = e.target.value; setSelectedSize(v); if (v === 'Stamp (20x25)') { setStampPerPage(110); setGridCols(10); setGridRows(11); } else if (v === 'Stamp (25x30)') { setStampPerPage(72); setGridCols(8); setGridRows(9); } else if (v === 'Passport (2x2)') { setPassportPerPage(36); setMixStamp('none'); setStampPerPage(0); setGridCols(6); setGridRows(6); } }} className="neon-select">{Object.keys(PRINT_SIZES).map(s => <option key={s} value={s}>{s}</option>)}</select>
+            </div>
+            <div className="check-icon">✓</div>
+          </div>
         </div>
 
+        {(selectedSize === 'Stamp (20x25)' || selectedSize === 'Stamp (25x30)') && (
+          <div className="passport-settings">
+            <div className="sheet-bank">
+              <div className="sheet-bank-head"><span>🧭 Sheet layout</span><i>{fillSheet ? 'fill one sheet' : 'exact ISO · spills to more sheets'}</i></div>
+              <label className="sb-paper">
+                <span>Paper</span>
+                <select value={passportPaperSize} onChange={e => setPassportPaperSize(e.target.value)}>
+                  <option value="A4">A4 · 210 × 297 mm</option>
+                  <option value="4x6 Photo">4x6 Photo · 102 × 152 mm</option>
+                </select>
+              </label>
+              <div className="sheet-bank-grid">
+                <label className="sb-field">
+                  <span>Per line</span>
+                  <div className="sb-step">
+                    <button onClick={() => { const c = Math.max(1, gridCols - 1); setGridCols(c); setPassportPerPage(c * gridRows); setStampPerPage(c * gridRows); }}>−</button>
+                    <input type="number" min="1" max="24" value={gridCols} onChange={e => { const c = Math.max(1, Math.min(24, parseInt(e.target.value) || 1)); setGridCols(c); setPassportPerPage(c * gridRows); setStampPerPage(c * gridRows); }} />
+                    <button onClick={() => { const c = Math.min(24, gridCols + 1); setGridCols(c); setPassportPerPage(c * gridRows); setStampPerPage(c * gridRows); }}>+</button>
+                  </div>
+                </label>
+                <label className="sb-field">
+                  <span>Rows</span>
+                  <div className="sb-step">
+                    <button onClick={() => { const r = Math.max(1, gridRows - 1); setGridRows(r); setPassportPerPage(gridCols * r); setStampPerPage(gridCols * r); }}>−</button>
+                    <input type="number" min="1" max="24" value={gridRows} onChange={e => { const r = Math.max(1, Math.min(24, parseInt(e.target.value) || 1)); setGridRows(r); setPassportPerPage(gridCols * r); setStampPerPage(gridCols * r); }} />
+                    <button onClick={() => { const r = Math.min(24, gridRows + 1); setGridRows(r); setPassportPerPage(gridCols * r); setStampPerPage(gridCols * r); }}>+</button>
+                  </div>
+                </label>
+                <label className="sb-field">
+                  <span>Padding mm</span>
+                  <div className="sb-step">
+                    <button onClick={() => setPassportPad(Math.max(0, Math.round((passportPad - 0.25) * 100) / 100))}>−</button>
+                    <input type="number" min="0" max="4" step="0.25" value={passportPad} onChange={e => setPassportPad(Math.max(0, Math.min(4, parseFloat(e.target.value) || 0)))} />
+                    <button onClick={() => setPassportPad(Math.min(4, Math.round((passportPad + 0.25) * 100) / 100))}>+</button>
+                  </div>
+                </label>
+                <label className="sb-field">
+                  <span>Copies</span>
+                  <div className="sb-step">
+                    <button onClick={() => setCopies(Math.max(1, copies - 1))}>−</button>
+                    <input type="number" min="1" max="99" value={copies} onChange={e => setCopies(Math.max(1, Math.min(99, parseInt(e.target.value) || 1)))} />
+                    <button onClick={() => setCopies(Math.min(99, copies + 1))}>+</button>
+                  </div>
+                </label>
+              </div>
+              <div className="sheet-bank-foot">
+                <button className={'sb-toggle' + (fillSheet ? ' on' : '')} onClick={() => setFillSheet(v => !v)}>
+                  <span className="sb-dot" />{fillSheet ? 'Fill sheet ON' : 'Fill sheet OFF'}
+                </button>
+                <button className="sb-iso" onClick={() => {
+                  if (selectedSize === 'Stamp (20x25)') { setGridCols(10); setGridRows(11); setStampPerPage(110); }
+                  else if (selectedSize === 'Stamp (25x30)') { setGridCols(8); setGridRows(9); setStampPerPage(72); }
+                  else { setGridCols(6); setGridRows(6); setPassportPerPage(36); }
+                  setFillSheet(false); setPassportPad(1);
+                }}>Exact ISO</button>
+                <span className="sb-read">
+                  {(() => {
+                    const pp = PRINT_SIZES[passportPaperSize] || PRINT_SIZES['A4'];
+                    const wmm = cssToMm(pp.cssWidth), hmm = cssToMm(pp.cssHeight);
+                    const isoW = selectedSize === 'Stamp (20x25)' ? 20 : selectedSize === 'Stamp (25x30)' ? 25 : 35;
+                    const isoH = selectedSize === 'Stamp (20x25)' ? 25 : selectedSize === 'Stamp (25x30)' ? 30 : 45;
+                    const iCols = Math.max(1, Math.floor(wmm / isoW + 1e-4));
+                    const iRows = Math.max(1, Math.floor(hmm / isoH + 1e-4));
+                    const cw = fillSheet ? wmm / gridCols : isoW;
+                    const ch = fillSheet ? hmm / gridRows : isoH;
+                    const cap = fillSheet ? gridCols * gridRows : iCols * iRows;
+                    const want = selectedSize.startsWith('Stamp') ? stampPerPage : (mixStamp !== 'none' ? passportPerPage + stampPerPage : passportPerPage);
+                    const sheets = Math.max(1, Math.ceil(want / Math.max(1, cap)));
+                    return (cw - 2 * passportPad).toFixed(1) + ' × ' + (ch - 2 * passportPad).toFixed(1) + ' mm · ' + cap + ' up · ' + sheets + (sheets > 1 ? ' sheets' : ' sheet');
+                  })()}
+                </span>
+              </div>
+            </div>
+            <div className="workflow-card settings-card">
+              <div className="card-content"><span className="icon">📄</span>
+                <select value={passportPaperSize} onChange={e => setPassportPaperSize(e.target.value)} className="neon-select"><option value="A4">A4 Paper</option><option value="4x6 Photo">4x6 Photo</option></select>
+              </div>
+              <div className="check-icon">✓</div>
+            </div>
+            <div className="workflow-card settings-card">
+              <div className="card-content"><span className="icon">🔢</span>
+                <input type="number" min="1" max="200" value={stampPerPage} onChange={e => setStampPerPage(Math.max(1, parseInt(e.target.value) || 1))} className="neon-input" />
+                <span style={{ fontSize: '12px', color: '#6b7280', marginLeft: '8px' }}>stamps total</span>
+              </div>
+              <div className="check-icon">✓</div>
+            </div>
+            <div className="workflow-card settings-card">
+              <div className="card-content"><span className="icon">⬜</span>
+                <input type="number" min="0" max="3" step="0.25" value={passportPad} onChange={e => setPassportPad(Math.max(0, Math.min(3, parseFloat(e.target.value) || 0)))} className="neon-input" />
+                <span style={{ fontSize: '12px', color: '#6b7280', marginLeft: '8px' }}>mm padding</span>
+                <span style={{ fontSize: '11px', color: '#047857', marginLeft: '10px', fontWeight: 700 }}>
+                  {selectedSize === 'Stamp (20x25)'
+                    ? ((20 - 2 * passportPad).toFixed(1) + ' × ' + (25 - 2 * passportPad).toFixed(1) + ' mm')
+                    : ((25 - 2 * passportPad).toFixed(1) + ' × ' + (30 - 2 * passportPad).toFixed(1) + ' mm')}
+                </span>
+              </div>
+              <div className="check-icon">✓</div>
+            </div>
+          </div>
+        )}
+
+        {selectedSize === 'Passport + Stamp Mix' && (
+          <div className="passport-settings">
+            <div className="workflow-card settings-card">
+              <div className="card-content"><span className="icon">📄</span>
+                <select value={passportPaperSize} onChange={e => setPassportPaperSize(e.target.value)} className="neon-select"><option value="A4">A4 Paper</option></select>
+              </div>
+              <div className="check-icon">✓</div>
+            </div>
+            <div className="workflow-card settings-card">
+              <div className="card-content"><span className="icon">🛂</span>
+                <input type="number" min="0" max="60" value={passportPerPage} onChange={e => setPassportPerPage(Math.max(0, parseInt(e.target.value) || 0))} className="neon-input" />
+                <span style={{ fontSize: '12px', color: '#6b7280', marginLeft: '8px' }}>passport (35×45 mm)</span>
+              </div>
+              <div className="check-icon">✓</div>
+            </div>
+            <div className="workflow-card settings-card">
+              <div className="card-content"><span className="icon">📮</span>
+                <input type="number" min="0" max="120" value={stampPerPage} onChange={e => setStampPerPage(Math.max(0, parseInt(e.target.value) || 0))} className="neon-input" />
+                <span style={{ fontSize: '12px', color: '#6b7280', marginLeft: '8px' }}>stamp (20×25 mm)</span>
+              </div>
+              <div className="check-icon">✓</div>
+            </div>
+            <div className="workflow-card settings-card">
+              <div className="card-content"><span className="icon">⬜</span>
+                <input type="number" min="0" max="3" step="0.25" value={passportPad} onChange={e => setPassportPad(Math.max(0, Math.min(3, parseFloat(e.target.value) || 0)))} className="neon-input" />
+                <span style={{ fontSize: '12px', color: '#6b7280', marginLeft: '8px' }}>mm padding (both)</span>
+              </div>
+              <div className="check-icon">✓</div>
+            </div>
+          </div>
+        )}
+
         {selectedSize === 'A4' && (
-          <div className="passport-settings"><div className="workflow-card settings-card"><div className="card-content"><span className="icon">🔄</span>
-            <select value={sideMode} onChange={e => setSideMode(e.target.value)} className="neon-select"><option value="single">Single Side</option><option value="double">Double Side (Front + Back)</option></select>
-          </div><div className="check-icon">✓</div></div></div>
+          <div className="passport-settings">
+            <div className="workflow-card settings-card">
+              <div className="card-content"><span className="icon">🔄</span>
+                <select value={sideMode} onChange={e => setSideMode(e.target.value)} className="neon-select"><option value="single">Single Side</option><option value="double">Double Side (Front + Back)</option></select>
+              </div>
+              <div className="check-icon">✓</div>
+            </div>
+          </div>
         )}
 
         {selectedSize === 'Passport (2x2)' && (
           <div className="passport-settings">
-            <div className="workflow-card settings-card"><div className="card-content"><span className="icon">📐</span>
-              <select value={passportPaperSize} onChange={e => setPassportPaperSize(e.target.value)} className="neon-select"><option value="A4">A4 Paper</option><option value="4x6 Photo">4x6 Photo</option></select>
-            </div><div className="check-icon">✓</div></div>
-            <div className="workflow-card settings-card"><div className="card-content"><span className="icon">🔢</span>
-              <input type="number" min="1" max="12" value={passportCols} onChange={e => setPassportCols(parseInt(e.target.value) || 1)} className="neon-input" />
-              <span style={{ fontSize: '12px', color: '#6b7280', marginLeft: '8px' }}>per line</span>
-              <input type="number" min="1" max="60" value={passportPerPage} onChange={e => setPassportPerPage(parseInt(e.target.value) || 1)} className="neon-input" style={{ marginLeft: '12px' }} />
-              <span style={{ fontSize: '12px', color: '#6b7280', marginLeft: '8px' }}>per page</span>
-            </div><div className="check-icon">✓</div></div>
+            <div className="sheet-bank">
+              <div className="sheet-bank-head"><span>🧭 Sheet layout</span><i>{fillSheet ? 'edge-to-edge fill' : 'exact ISO cells'}</i></div>
+              <div className="sheet-bank-grid">
+                <label className="sb-field">
+                  <span>Per line</span>
+                  <div className="sb-step">
+                    <button onClick={() => { const c = Math.max(1, gridCols - 1); setGridCols(c); setPassportPerPage(c * gridRows); setStampPerPage(c * gridRows); }}>−</button>
+                    <input type="number" min="1" max="24" value={gridCols} onChange={e => { const c = Math.max(1, Math.min(24, parseInt(e.target.value) || 1)); setGridCols(c); setPassportPerPage(c * gridRows); setStampPerPage(c * gridRows); }} />
+                    <button onClick={() => { const c = Math.min(24, gridCols + 1); setGridCols(c); setPassportPerPage(c * gridRows); setStampPerPage(c * gridRows); }}>+</button>
+                  </div>
+                </label>
+                <label className="sb-field">
+                  <span>Rows</span>
+                  <div className="sb-step">
+                    <button onClick={() => { const r = Math.max(1, gridRows - 1); setGridRows(r); setPassportPerPage(gridCols * r); setStampPerPage(gridCols * r); }}>−</button>
+                    <input type="number" min="1" max="24" value={gridRows} onChange={e => { const r = Math.max(1, Math.min(24, parseInt(e.target.value) || 1)); setGridRows(r); setPassportPerPage(gridCols * r); setStampPerPage(gridCols * r); }} />
+                    <button onClick={() => { const r = Math.min(24, gridRows + 1); setGridRows(r); setPassportPerPage(gridCols * r); setStampPerPage(gridCols * r); }}>+</button>
+                  </div>
+                </label>
+                <label className="sb-field">
+                  <span>Padding mm</span>
+                  <div className="sb-step">
+                    <button onClick={() => setPassportPad(Math.max(0, Math.round((passportPad - 0.25) * 100) / 100))}>−</button>
+                    <input type="number" min="0" max="4" step="0.25" value={passportPad} onChange={e => setPassportPad(Math.max(0, Math.min(4, parseFloat(e.target.value) || 0)))} />
+                    <button onClick={() => setPassportPad(Math.min(4, Math.round((passportPad + 0.25) * 100) / 100))}>+</button>
+                  </div>
+                </label>
+                <label className="sb-field">
+                  <span>Copies</span>
+                  <div className="sb-step">
+                    <button onClick={() => setCopies(Math.max(1, copies - 1))}>−</button>
+                    <input type="number" min="1" max="99" value={copies} onChange={e => setCopies(Math.max(1, Math.min(99, parseInt(e.target.value) || 1)))} />
+                    <button onClick={() => setCopies(Math.min(99, copies + 1))}>+</button>
+                  </div>
+                </label>
+              </div>
+              <div className="sheet-bank-foot">
+                <button className={'sb-toggle' + (fillSheet ? ' on' : '')} onClick={() => setFillSheet(v => !v)}>
+                  <span className="sb-dot" />{fillSheet ? 'Fill sheet ON' : 'Fill sheet OFF'}
+                </button>
+                <button className="sb-iso" onClick={() => {
+                  if (selectedSize === 'Stamp (20x25)') { setGridCols(10); setGridRows(11); setStampPerPage(110); }
+                  else if (selectedSize === 'Stamp (25x30)') { setGridCols(8); setGridRows(9); setStampPerPage(72); }
+                  else { setGridCols(6); setGridRows(6); setPassportPerPage(36); }
+                  setFillSheet(false); setPassportPad(1);
+                }}>Exact ISO</button>
+                <span className="sb-read">
+                  {(() => {
+                    const p = PRINT_SIZES[passportPaperSize] || PRINT_SIZES['A4'];
+                    const wmm = cssToMm(p.cssWidth), hmm = cssToMm(p.cssHeight);
+                    const isoW = selectedSize === 'Stamp (20x25)' ? 20 : selectedSize === 'Stamp (25x30)' ? 25 : 35;
+                    const isoH = selectedSize === 'Stamp (20x25)' ? 25 : selectedSize === 'Stamp (25x30)' ? 30 : 45;
+                    const cw = fillSheet ? wmm / gridCols : isoW;
+                    const ch = fillSheet ? hmm / gridRows : isoH;
+                    return (cw - 2 * passportPad).toFixed(1) + ' × ' + (ch - 2 * passportPad).toFixed(1) + ' mm · ' + (gridCols * gridRows) + ' up';
+                  })()}
+                </span>
+              </div>
+            </div>
+            <div className="workflow-card settings-card">
+              <div className="card-content"><span className="icon">📮</span>
+                <select value={mixStamp} onChange={e => { const v = e.target.value; setMixStamp(v); if (v !== 'none' && (!stampPerPage || stampPerPage < 1)) setStampPerPage(10); }} className="neon-select">
+                  <option value="none">No stamp — passport only</option>
+                  <option value="20x25">Add stamp 20 × 25 mm</option>
+                  <option value="25x30">Add stamp 25 × 30 mm</option>
+                </select>
+              </div>
+              <div className="check-icon">✓</div>
+            </div>
+            {mixStamp !== 'none' && (
+              <div className="workflow-card settings-card">
+                <div className="card-content"><span className="icon">🔢</span>
+                  <input type="number" min="0" max="120" value={stampPerPage} onChange={e => setStampPerPage(Math.max(0, parseInt(e.target.value) || 0))} className="neon-input" />
+                  <span style={{ fontSize: '12px', color: '#6b7280', marginLeft: '8px' }}>{mixStamp === '25x30' ? 'stamps (25×30 mm)' : 'stamps (20×25 mm)'}</span>
+                  <span style={{ fontSize: '11px', color: '#047857', marginLeft: '10px', fontWeight: 700 }}>
+                    {mixStamp === '25x30' ? ((25 - 2 * passportPad).toFixed(1) + ' × ' + (30 - 2 * passportPad).toFixed(1) + ' mm') : ((20 - 2 * passportPad).toFixed(1) + ' × ' + (25 - 2 * passportPad).toFixed(1) + ' mm')}
+                  </span>
+                  <button className="em-step" style={{ marginLeft: '10px' }} onClick={() => { setMixStamp('none'); setStampPerPage(0); }}>clear</button>
+                </div>
+                <div className="check-icon">✓</div>
+              </div>
+            )}
+            <div className="workflow-card settings-card">
+              <div className="card-content"><span className="icon">📐</span>
+                <select value={passportPaperSize} onChange={e => setPassportPaperSize(e.target.value)} className="neon-select"><option value="A4">A4 Paper</option><option value="4x6 Photo">4x6 Photo</option></select>
+              </div>
+              <div className="check-icon">✓</div>
+            </div>
+            <div className="workflow-card settings-card">
+              <div className="card-content"><span className="icon">🔢</span>
+                <input type="number" min="1" max="12" value={passportCols} onChange={e => setPassportCols(parseInt(e.target.value) || 1)} className="neon-input" />
+                <span style={{ fontSize: '12px', color: '#6b7280', marginLeft: '8px' }}>per line</span>
+                <input type="number" min="1" max="60" value={passportPerPage} onChange={e => setPassportPerPage(parseInt(e.target.value) || 1)} className="neon-input" style={{ marginLeft: '12px' }} />
+                <span style={{ fontSize: '12px', color: '#6b7280', marginLeft: '8px' }}>per page</span>
+              </div>
+              <div className="check-icon">✓</div>
+            </div>
+            <div className="workflow-card settings-card">
+              <div className="card-content"><span className="icon">⬜</span>
+                <input type="number" min="0" max="4" step="0.25" value={passportPad} onChange={e => setPassportPad(Math.max(0, Math.min(4, parseFloat(e.target.value) || 0)))} className="neon-input" />
+                <span style={{ fontSize: '12px', color: '#6b7280', marginLeft: '8px' }}>mm padding each side</span>
+                <span style={{ fontSize: '11px', color: '#047857', marginLeft: '10px', fontWeight: 700 }}>
+                  {'photo prints ' + (35 - 2 * passportPad).toFixed(1) + ' × ' + (45 - 2 * passportPad).toFixed(1) + ' mm'}
+                </span>
+              </div>
+              <div className="check-icon">✓</div>
+            </div>
           </div>
         )}
 
         {isFullPageMode && (
-          <div className="passport-settings"><div className="workflow-card settings-card"><div className="card-content"><span className="icon">🗂️</span>
-            <select value={pagesPerSheet} onChange={e => setPagesPerSheet(parseInt(e.target.value, 10))} className="neon-select">
-              {isDoubleA4 ? <><option value={2}>2 / sheet</option><option value={4}>4 / sheet</option><option value={6}>6 / sheet</option><option value={8}>8 / sheet</option></>
-                : <><option value={1}>1 / sheet</option><option value={2}>2 / sheet</option><option value={4}>4 / sheet</option><option value={6}>6 / sheet</option><option value={8}>8 / sheet</option><option value={9}>9 / sheet</option><option value={16}>16 / sheet</option></>}
-            </select>
-          </div><div className="check-icon">✓</div></div></div>
+          <div className="passport-settings">
+            <div className="workflow-card settings-card">
+              <div className="card-content"><span className="icon">🗂️</span>
+                <select value={pagesPerSheet} onChange={e => setPagesPerSheet(parseInt(e.target.value, 10))} className="neon-select">
+                  {isDoubleA4 ? <><option value={2}>2 / sheet</option><option value={4}>4 / sheet</option><option value={6}>6 / sheet</option><option value={8}>8 / sheet</option></>
+                    : <><option value={1}>1 / sheet</option><option value={2}>2 / sheet</option><option value={4}>4 / sheet</option><option value={6}>6 / sheet</option><option value={8}>8 / sheet</option><option value={9}>9 / sheet</option><option value={16}>16 / sheet</option></>}
+                </select>
+              </div>
+              <div className="check-icon">✓</div>
+            </div>
+          </div>
         )}
 
-        <div className="passport-settings"><div className="workflow-card settings-card"><div className="card-content"><span className="icon">🔢</span>
-          <input type="number" min="1" max="500" value={copies} onChange={e => setCopies(parseInt(e.target.value) || 1)} className="neon-input" />
-          <span style={{ fontSize: '12px', color: '#6b7280', marginLeft: '10px' }}>copies</span>
-        </div><div className="check-icon">✓</div></div></div>
+        <div className="passport-settings">
+          <div className="workflow-card settings-card">
+            <div className="card-content"><span className="icon">🔢</span>
+              <input type="number" min="1" max="500" value={copies} onChange={e => setCopies(parseInt(e.target.value) || 1)} className="neon-input" />
+              <span style={{ fontSize: '12px', color: '#6b7280', marginLeft: '10px' }}>copies</span>
+            </div>
+            <div className="check-icon">✓</div>
+          </div>
+        </div>
+
+        <div className="passport-settings">
+          <div className="workflow-card settings-card">
+            <div className="card-content"><span className="icon">🎚️</span>
+              <select value={printDpi} onChange={e => setPrintDpi(parseInt(e.target.value, 10))} className="neon-select">
+                <option value={150}>150 DPI · draft, smallest file</option>
+                <option value={200}>200 DPI · standard office</option>
+                <option value={300}>300 DPI · photo-lab clarity</option>
+                <option value={400}>400 DPI · high clarity</option>
+                <option value={600}>600 DPI · maximum clarity</option>
+              </select>
+            </div>
+            <div className="check-icon">✓</div>
+          </div>
+        </div>
 
         {preview && (
           <div className="preview-card">
             <div className="preview-head"><span>👁️ Live preview</span><span className="preview-meta">{previewMeta}</span></div>
-            <div className="preview-stage" style={{ aspectRatio: pwMm + ' / ' + phMm }}><img src={preview} alt="Print preview" /></div>
+            <div className="preview-stage" style={{ aspectRatio: pwMm + ' / ' + phMm }}><img src={preview} alt="Print preview" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} /></div>
+            {previewPages.length > 1 && (
+              <div className="sheet-nav">
+                <button className="sn-arrow" disabled={previewIdx === 0} onClick={() => setPreviewIdx(i => Math.max(0, i - 1))}>‹</button>
+                <div className="sn-dots">
+                  {previewPages.map((_, i) => (
+                    <button key={i} className={'sn-dot' + (i === previewIdx ? ' on' : '')} onClick={() => setPreviewIdx(i)} aria-label={'Sheet ' + (i + 1)} />
+                  ))}
+                </div>
+                <span className="sn-label">Sheet {previewIdx + 1} / {previewPages.length}</span>
+                <button className="sn-arrow" disabled={previewIdx >= previewPages.length - 1} onClick={() => setPreviewIdx(i => Math.min(previewPages.length - 1, i + 1))}>›</button>
+              </div>
+            )}
 
             <div className="inline-tools">
               <div className="em-block-title">Rotate</div>
-              <div className="em-chips">
-                {[0, 45, 90, 135, 180].map(d => <button key={d} className={'em-chip' + (adj.rot === d ? ' on' : '')} onClick={() => set('rot', d)}>{d}°</button>)}
+              <div className="adj-row">
+                <span className="adj-label">Angle</span>
+                <select className="adj-select" value={adj.rot} onChange={e => set('rot', parseInt(e.target.value, 10))}>
+                  {[0, 45, 90, 135, 180, 225, 270, 315, 360].map(d => <option key={d} value={d}>{d}°</option>)}
+                </select>
               </div>
               <div className="em-block-title" style={{ marginTop: '10px' }}>Fixed anchor</div>
               <div className="em-anchor-grid">

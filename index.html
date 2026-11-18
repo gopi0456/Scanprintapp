@@ -5,7 +5,36 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>scan-print-app</title>
-  </head>
+  <script id="gfs-db-guard">
+(function () {
+  var RX = /supabase not connected/i;
+  var pending = null;
+  function scrub() {
+    var els = document.querySelectorAll('div,p,span,small,strong,section,li');
+    for (var i = 0; i < els.length; i++) {
+      var n = els[i];
+      var t = n.textContent || '';
+      if (t.length > 260 || !RX.test(t)) continue;
+      if (n.querySelector('input,button,select,textarea,img,a')) continue;
+      if (n.style.display !== 'none') n.style.display = 'none';
+    }
+  }
+  function schedule() {
+    if (pending) return;
+    pending = setTimeout(function () { pending = null; scrub(); }, 60);
+  }
+  function start() {
+    scrub();
+    try {
+      new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, characterData: true });
+    } catch (e) {}
+    setInterval(scrub, 1200);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+  else start();
+})();
+</script>
+</head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
