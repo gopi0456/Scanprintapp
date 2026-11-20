@@ -201,8 +201,9 @@ export default function CompressSavePanel({ setIsLoading, setLoadProgress, setLo
       if (!isImage) {
         let blob, per = [], k = false;
         if (mode === 'keep_text' && entries[0] && entries[0].bytes) {
-          const r = await compressPdfKeepText(entries[0].bytes, kb || Infinity, p => setLoadProgress(p));
+          const r = await compressPdfKeepText(entries[0].bytes, kb || Infinity, p => setLoadProgress(p), gray);
           blob = r.blob; k = true;
+          if (r.impossible) alert("The text and layout alone are bigger than your target - pictures can't shrink it further. Raise the target or use a raster mode.");
         } else {
           const r = await compressPdfWithMode(activeIdx.map(i => entries[i]), kb || Infinity, origKB, mode, gray, p => setLoadProgress(p));
           blob = r.blob; per = r.per; k = !!r.passthrough;
@@ -298,6 +299,7 @@ export default function CompressSavePanel({ setIsLoading, setLoadProgress, setLo
             <input type="number" min="1" placeholder={isImage ? 'Size per image' : 'Total size'} value={sizeInput} onChange={e => setSizeInput(e.target.value)} className="target-input" />
             <select value={unit} onChange={e => setUnit(e.target.value)} className="target-unit"><option>KB</option><option>MB</option></select>
           </div><div className="check-icon">✓</div></div>
+          <div className="workflow-card settings-card" style={{ cursor: 'pointer' }} onClick={() => { if (!origKB) return; setUnit('KB'); setSizeInput(String(Math.max(1, origKB - 100))); }}><div className="card-content"><span className="icon">📉</span><span className="label">Target -100 KB</span></div><div className="check-icon">✓</div></div>
 
           <label className="workflow-card settings-card"><div className="card-content"><span className="icon">⬛</span><span className="label">Grayscale</span></div>
             <input type="checkbox" checked={gray} onChange={e => setGray(e.target.checked)} style={{ width: 22, height: 22 }} /></label>

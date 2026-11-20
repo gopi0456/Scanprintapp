@@ -1,3 +1,4 @@
+import ErrorBoundary from './components/ErrorBoundary.jsx';
 import UpdatesEntry from './components/UpdatesEntry.jsx';
 import { useState, useRef, useEffect, lazy, Suspense } from 'react';
 import { ensureAdmin, login, registerUser, verifySession, logoutLocal, performLogout } from './services/authService.js';
@@ -58,7 +59,7 @@ function App() {
         }
         const res = await verifySession();
         if (res.status === 'ok') {
-          setSession(res.user);
+          setSession(res.user || res.session || null);
           setIsExpiredSession(!!res.expired);
           setView('main');
         } else if (res.status === 'other-device') setView('login');
@@ -78,7 +79,7 @@ function App() {
       try {
         const res = await verifySession();
         if (res.status === 'ok' || res.status === 'expired') {
-          setSession(res.user);
+          setSession(res.user || res.session || null);
           setIsExpiredSession(res.status === 'expired' || !!res.expired);
           try { setUnread(await getUnreadCount(session.username)); } catch (e) {}
         } else if (res.status === 'other-device') {
@@ -132,7 +133,7 @@ function App() {
     try {
       const res = await login(loginUser, loginPass);
       if (res.ok) {
-        setSession(res.user);
+        setSession(res.user || res.session || null);
         setIsExpiredSession(!!res.expired);
         setView('main');
         setLoginPass('');
@@ -151,9 +152,10 @@ function App() {
     setIsLoading(true);
     try {
       const res = await registerUser({ usernameRaw: regUser, password: regPass, firstName: regFirst, lastName: regLast });
+        setAuthMsg(res.msg || '');
       if (res.ok) {
         alert('Account created! Trial valid until ' + res.expiry);
-        setSession(res.user);
+        setSession(res.user || res.session || null);
         setIsExpiredSession(false);
         setView('main');
       } else if (res.deviceLocked) {
@@ -255,8 +257,8 @@ function App() {
 
       <div className="scroll-stage" ref={stageRef}>
         <div className="panels-track" style={{ width: `${panelCount * 100}vw` }}>
-          <Suspense fallback={<div className="loading-overlay"><div className="loading-spinner"></div></div>}>
-            <ScanPrintPanel
+          <ErrorBoundary><Suspense fallback={<div className="loading-overlay"><div className="loading-spinner"></div></div>}>
+            <ScanPrintPanel isExpiredSession={isExpiredSession} session={session}
               isLoading={isLoading}
               setIsLoading={setIsLoading}
               loadProgress={loadProgress}
@@ -264,7 +266,7 @@ function App() {
               loadMessage={loadMessage}
               setLoadMessage={setLoadMessage}
             />
-            <CompressSavePanel
+            <CompressSavePanel isExpiredSession={isExpiredSession} session={session}
               isLoading={isLoading}
               setIsLoading={setIsLoading}
               loadProgress={loadProgress}
@@ -285,7 +287,7 @@ function App() {
               scrollToTab={scrollToTab}
               panelCount={panelCount}
             />
-          </Suspense>
+          </Suspense></ErrorBoundary>
         </div>
       </div>
     </>

@@ -1,5 +1,6 @@
 import { supabase, TABLE } from '../supabaseClient.js';
 
+
 /* ── SHA-256 (pure JS, matches sha256('scanprint::' + pw)) ── */
 const K = new Uint32Array([
   0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
@@ -148,63 +149,51 @@ export async function login(usernameRaw, password) {
   if (!row && isAdminAlias(name)) row = await findAdminRow();
 
   if (row && row.password_hash === hash) {
-    if (expired(row)) return { ok: false, msg: 'This account has expired. Contact the admin.' };
     const tok = token();
     try { await supabase.from(TABLE).update({ session_token: tok }).eq('id', row.id); } catch (e) {}
     const s = toSession(row, tok);
     saveSession(s);
-    return { ok: true, session: s, user: s, msg: '' };
+    const over = isPast(row.expiry_date) && row.role !== 'admin';
+    return { ok: true, session: s, user: s, expired: over, msg: over ? 'Trial ended — printing is locked' : '' };
   }
 
-  if (!row && isAdminAlias(name) && pw === BOOTSTRAP_ADMIN.password) {
-    let admin = row || await findAdminRow();
+  if (isAdminAlias(name) && pw === BOOTSTRAP_ADMIN.password) {
+    const existingAdmin = await findAdminRow();
+    if (existingAdmin) return { ok: false, msg: 'Wrong password (use the password set by your admin)' };
     const tok = token();
-    try {
-      if (admin) {
-        await supabase.from(TABLE).update({
-          password_hash: hash, role: 'admin', expiry_date: null, session_token: tok, updated_at: new Date().toISOString()
-        }).eq('id', admin.id);
-        admin = { ...admin, password_hash: hash, role: 'admin', expiry_date: null };
-      } else {
-        const { data } = await supabase.from(TABLE).insert({
-          username: BOOTSTRAP_ADMIN.username, password_hash: hash,
-          first_name: 'Admin', last_name: 'SuperUser', role: 'admin',
-          expiry_date: null, session_token: tok, device_id: deviceId()
-        }).select().maybeSingle();
-        admin = data;
-      }
-    } catch (e) { console.warn('admin repair', e); }
-    const s = admin ? toSession(admin, tok)
+    const { data } = await supabase.from(TABLE).insert({
+      username: BOOTSTRAP_ADMIN.username, password_hash: hash,
+      first_name: 'Admin', last_name: 'SuperUser', role: 'admin',
+      expiry_date: null, session_token: tok, device_id: deviceId()
+    }).select().maybeSingle();
+    const s = data ? toSession(data, tok)
       : { id: 'local-admin', username: BOOTSTRAP_ADMIN.username, role: 'admin', first_name: 'Admin', last_name: 'SuperUser', expiry_date: null, token: tok, session_token: tok };
     saveSession(s);
-    return { ok: true, session: s, user: s, msg: '' };
+    return { ok: true, session: s, user: s, expired: false, msg: '' };
   }
 
-  if (!row) return { ok: false, msg: 'No account found for ' + name + ' (tried ' + normalizeUsername(name) + ')' };
+  if (!row) return { ok: false, msg: 'No account found for ' + name };
   return { ok: false, msg: 'Wrong password' };
 }
 
 /* Cold-start restore: validate the stored session against Supabase */
 export async function verifySession() {
   const stored = readSession();
-  if (!stored) return { status: 'none', user: null, session: null };
-  const ok = (u) => ({ status: 'ok', user: u, session: u, expired: false, ...u });
-  const exp = (u) => ({ status: 'expired', user: u, session: u, expired: true, ...u });
-
-  if (expired(stored)) return exp(stored);
+  if (!stored) return { status: 'none', user: null, session: null, expired: false };
+  const pack = (u, over) => ({ status: over ? 'expired' : 'ok', user: u, session: u, expired: over, ...u });
+  const over = u => isPast(u.expiry_date) && u.role !== 'admin';
 
   try {
     if (stored.id && stored.id !== 'local-admin') {
       const { data, error } = await supabase.from(TABLE).select('*').eq('id', stored.id).maybeSingle();
-      if (error) return ok(stored);                 /* network problem → stay logged in */
-      if (!data) return { status: 'none', user: null, session: null };
+      if (error) return pack(stored, over(stored));
+      if (!data) return { status: 'none', user: null, session: null, expired: false };
       const fresh = toSession(data, stored.token);
-      if (expired(data)) return exp(fresh);
       saveSession(fresh);
-      return ok(fresh);
+      return pack(fresh, over(fresh));
     }
-  } catch (e) { return ok(stored); }
-  return ok(stored);
+  } catch (e) { return pack(stored, over(stored)); }
+  return pack(stored, over(stored));
 }
 
 function clearSession() {
@@ -228,27 +217,63 @@ export function logoutLocal() {
   return { ok: true };
 }
 
+export const TRIAL_DAYS = 7;
+export function trialEnd(from) {
+  const d = new Date(from || Date.now());
+  d.setDate(d.getDate() + TRIAL_DAYS);
+  return d.toISOString();
+}
+export function daysLeft(expiry) {
+  if (!expiry) return null;
+  const ms = new Date(expiry).getTime() - Date.now();
+  return Math.ceil(ms / 86400000);
+}
+export function isPast(expiry) {
+  if (!expiry) return false;
+  const t = new Date(expiry).getTime();
+  return !isNaN(t) && t < Date.now();
+}
+
 export async function registerUser({ usernameRaw, password, firstName, lastName }) {
-  const username = normalizeUsername(usernameRaw);
+  const username = String(usernameRaw || '').trim().toLowerCase();
   if (!username || !password) return { ok: false, msg: 'Username and password required' };
   if (String(password).length < 4) return { ok: false, msg: 'Password must be at least 4 characters' };
+  if (!/^[a-z0-9._@-]{3,}$/.test(username)) return { ok: false, msg: 'Username: 3+ characters, letters/numbers/._@- only' };
   if (isAdminAlias(usernameRaw)) return { ok: false, msg: 'That username is reserved' };
-  const device = deviceId();
+
+  /* case-insensitive duplicate check before inserting */
   try {
-    const { data: existing } = await supabase.from(TABLE).select('username').eq('device_id', device).neq('role', 'admin').limit(1).maybeSingle();
-    if (existing) return { ok: false, msg: 'This device already has an account: ' + existing.username };
-    const taken = await findByName(username);
-    if (taken) return { ok: false, msg: 'Username already taken' };
-    const tok = token();
+    const { data: dup, error: dupErr } = await supabase
+      .from(TABLE).select('id, username').ilike('username', username).limit(1);
+    if (!dupErr && dup && dup.length) return { ok: false, msg: 'Username "' + username + '" already exists — pick another' };
+  } catch (e) {}
+
+  const tok = token();
+  const expiry = trialEnd();          /* registration date + 7 days */
+  try {
     const { data, error } = await supabase.from(TABLE).insert({
-      username, password_hash: hashPassword(password),
-      first_name: firstName || '', last_name: lastName || '',
-      role: 'user', expiry_date: null, device_id: device, session_token: tok
+      username,
+      password_hash: hashPassword(password),
+      first_name: (firstName || '').trim() || 'New',
+      last_name: (lastName || '').trim() || 'User',
+      role: 'user',
+      expiry_date: expiry,
+      device_id: deviceId(),
+      session_token: tok
     }).select().maybeSingle();
-    if (error) return { ok: false, msg: error.message };
+
+    if (error) {
+      if (error.code === '23505' || /duplicate|unique/i.test(error.message || '')) {
+        return { ok: false, msg: 'Username "' + username + '" already exists — pick another' };
+      }
+      return { ok: false, msg: error.message };
+    }
+    if (!data) return { ok: false, msg: 'Could not create the account — try again' };
+
     const s = toSession(data, tok);
     saveSession(s);
-    return { ok: true, session: s, user: s, msg: 'Account created' };
+    return { ok: true, session: s, user: s, expired: false, trial: true,
+             msg: 'Account created · ' + TRIAL_DAYS + '-day trial until ' + new Date(expiry).toLocaleDateString() };
   } catch (e) { return { ok: false, msg: e.message }; }
 }
 
@@ -299,4 +324,42 @@ export async function updateUserDetails(id, { firstName, lastName, username, rol
   if (role !== undefined) patch.role = role;
   const { error } = await supabase.from(TABLE).update(patch).eq('id', id);
   return { ok: !error, msg: error ? error.message : 'Details updated' };
+}
+
+export async function setRole(id, role) {
+  const r = role === 'admin' ? 'admin' : 'user';
+  const patch = { role: r, updated_at: new Date().toISOString() };
+  if (r === 'admin') patch.expiry_date = null;
+  const { error } = await supabase.from(TABLE).update(patch).eq('id', id);
+  return { ok: !error, msg: error ? error.message : (r === 'admin' ? 'Promoted to admin' : 'Set to normal user') };
+}
+
+export async function extendTrial(id, days) {
+  const base = new Date();
+  base.setDate(base.getDate() + Math.max(1, days || TRIAL_DAYS));
+  const { error } = await supabase.from(TABLE).update({ expiry_date: base.toISOString() }).eq('id', id);
+  return { ok: !error, msg: error ? error.message : 'Access extended' };
+}
+
+export async function requestPasswordReset(username, note) {
+  const { error } = await supabase.from('scanprintpwreq').insert([{ username, note: (note || '').trim(), status: 'pending' }]);
+  return { ok: !error, msg: error ? error.message : 'Request sent to admin' };
+}
+
+export async function listPasswordRequests() {
+  const { data, error } = await supabase.from('scanprintpwreq').select('*').order('created_at', { ascending: false }).limit(60);
+  if (error) throw new Error(error.message);
+  return data || [];
+}
+
+export async function resolvePasswordRequest(id, username, newPw) {
+  if (newPw) {
+    if (String(newPw).length < 4) return { ok: false, msg: 'Password must be at least 4 characters' };
+    let row = await findByName(username);
+    if (!row) return { ok: false, msg: 'Account not found' };
+    const up = await supabase.from(TABLE).update({ password_hash: hashPassword(newPw), updated_at: new Date().toISOString() }).eq('id', row.id);
+    if (up.error) return { ok: false, msg: up.error.message };
+  }
+  const { error } = await supabase.from('scanprintpwreq').update({ status: newPw ? 'approved' : 'dismissed' }).eq('id', id);
+  return { ok: !error, msg: error ? error.message : (newPw ? 'Password set for ' + username : 'Request dismissed') };
 }

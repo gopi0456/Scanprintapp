@@ -236,9 +236,11 @@ export async function compressPdfWithMode(entries, targetKB, origKB, mode, gray,
     return { blob: new Blob([await out.save({ useObjectStreams: true })], { type: 'application/pdf' }), per };
   };
   let res = await build(computeBudgets(entries.length, targetKB, origKB));
-  if (finite && res.blob.size > targetKB * 1024) {
+  let guard = 0;
+  while (finite && res.blob.size > targetKB * 1024 && guard < 3) {
+    guard++;
     const k = (targetKB * 1024 * .94) / res.blob.size;
-    res = await build(computeBudgets(entries.length, targetKB, origKB).map(b => Math.max(.3, b * k)));
+    res = await build(res.per.map(p => Math.max(.3, p.kb * k)));
   }
   if (sameSrc && origKB && res.blob.size > origKB * 1024) {
     const blob = await originalPdf(entries[0].bytes, entries.map(e => e.pageIdx));

@@ -10,6 +10,21 @@ export function setPrintDpi(d) { DPI = [150, 200, 300, 400, 600].includes(Number
 export function getPrintDpi() { return DPI; }
 const sc = v => Math.round(v * (DPI / 300));
 
+function drawCover(ctx, img, x, y, w, h, adj = {}) {
+  const zoom = Math.max(0.2, adj.zoom || 1);
+  const s = Math.max(w / img.width, h / img.height) * zoom;
+  const dw = img.width * s, dh = img.height * s;
+  const dx = x + (w - dw) / 2 + ((adj.x || 0) / 100) * w;
+  const dy = y + (h - dh) / 2 + ((adj.y || 0) / 100) * h;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  ctx.translate(x + w / 2, y + h / 2);
+  ctx.rotate(((adj.rotate || 0) * Math.PI) / 180);
+  ctx.translate(-(x + w / 2), -(y + h / 2));
+  ctx.drawImage(img, dx, dy, dw, dh);
+  ctx.restore();
+}
+
 function drawAdjusted(ctx, img, x, y, w, h, adj = {}) {
   const a = { ...DEFAULT_ADJ, ...adj };
   const cr = a.crop || { x: 0, y: 0, w: 1, h: 1 };
@@ -135,9 +150,10 @@ function newSheetCanvas(W, H) {
   return { c, ctx };
 }
 
-function stampCell(ctx, img, x, y, cw, ch, pad, adj) {
+function stampCell(ctx, img, x, y, cw, ch, pad, adj, cover) {
   ctx.fillStyle = '#fff'; ctx.fillRect(x, y, cw, ch);
-  drawAdjusted(ctx, img, x + pad, y + pad, cw - 2 * pad, ch - 2 * pad, adj);
+  if (cover) drawCover(ctx, img, x + pad, y + pad, cw - 2 * pad, ch - 2 * pad, adj);
+  else drawAdjusted(ctx, img, x + pad, y + pad, cw - 2 * pad, ch - 2 * pad, adj);
   border(ctx, x + pad, y + pad, cw - 2 * pad, ch - 2 * pad, true);
 }
 
@@ -160,6 +176,48 @@ export function createPassportLayout(dataUrls, perPage, colsArg, pk, adj, padMm,
       sheets.push(c.toDataURL('image/jpeg', 0.92));
     }
     return sheets;
+  });
+}
+
+function fitContainAdjusted(dataUrl, cfg, adj) {
+  return loadImage(dataUrl).then(img => {
+    const W = sc(cfg.width), H = sc(cfg.height);
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+    const a = adj || {};
+    const zoom = Math.max(0.2, a.zoom || 1);
+    /* zoom 1 (= 0%) draws the source page edge-to-edge on the sheet, exactly as the original */
+    const dw = W * zoom, dh = H * zoom;
+    const dx = (W - dw) / 2 + ((a.x || 0) / 100) * W;
+    const dy = (H - dh) / 2 + ((a.y || 0) / 100) * H;
+    ctx.save();
+    ctx.translate(W / 2, H / 2);
+    ctx.rotate(((a.rotate || 0) * Math.PI) / 180);
+    ctx.translate(-W / 2, -H / 2);
+    ctx.drawImage(img, dx, dy, dw, dh);
+    ctx.restore();
+    return c.toDataURL('image/jpeg', 0.92);
+  });
+}
+
+function fitCoverAdjusted(dataUrl, cfg, adj) {
+  return loadImage(dataUrl).then(img => {
+    const W = sc(cfg.width), H = sc(cfg.height);
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+    const a = adj || {};
+    const zoom = Math.max(0.2, a.zoom || 1);
+    const s = Math.max(W / img.width, H / img.height) * zoom;
+    const dw = img.width * s, dh = img.height * s;
+    const dx = (W - dw) / 2 + ((a.x || 0) / 100) * W;
+    const dy = (H - dh) / 2 + ((a.y || 0) / 100) * H;
+    ctx.save();
+    ctx.translate(W / 2, H / 2);
+    ctx.rotate(((a.rotate || 0) * Math.PI) / 180);
+    ctx.translate(-W / 2, -H / 2);
+    ctx.drawImage(img, dx, dy, dw, dh);
+    ctx.restore();
+    return c.toDataURL('image/jpeg', 0.92);
   });
 }
 
@@ -200,6 +258,9 @@ export async function composePrintPages(images, o) {
   } else if (cfg.isMix) {
     repeat(await createMixLayout(images, o.passportPerPage || 6, o.stampPerPage || 20, paper, adj, pad));
     cssW = PRINT_SIZES[paper].cssWidth; cssH = PRINT_SIZES[paper].cssHeight;
+  } else if (o.sizeKey === '4x6 Photo') {
+    repeat(await createStampLayout(images, o.stampPerPage || o.passportPerPage, paper, adj, pad, 101.6, 152.4, { fill: false, cover: true }));
+    cssW = PRINT_SIZES[paper].cssWidth; cssH = PRINT_SIZES[paper].cssHeight;
   } else if (o.sizeKey === 'A4' && o.sideMode === 'double') {
     const per = Math.max(2, 2 * Math.round((o.pagesPerSheet || 2) / 2));
     const total = Math.max(images.length, per);
@@ -210,7 +271,7 @@ export async function composePrintPages(images, o) {
     repeat(await createNUpLayout(expand(images, Math.ceil(total / per) * per), per, o.sizeKey, adj));
   } else {
     const one = [];
-    for (const img of images) one.push(await fitAdjusted(img, cfg, adj));
+    for (const img of images) one.push(o.sizeKey === 'A4' ? await fitContainAdjusted(img, cfg, adj) : (o.sizeKey === '4x6 Photo' ? await fitCoverAdjusted(img, cfg, adj) : await fitAdjusted(img, cfg, adj)));
     repeat(one);
   }
   return { pages, cssW, cssH };
@@ -295,7 +356,7 @@ export function createStampLayout(dataUrls, perPage, pk, adj, padMm, cellWmm, ce
       const { c, ctx } = newSheetCanvas(m.W, m.H);
       for (let i = 0; i < count; i++) {
         const r = Math.floor(i / m.cols), co = i % m.cols;
-        stampCell(ctx, imgs[start + i], co * m.CW, r * m.CH, m.CW, m.CH, PAD, adj);
+        stampCell(ctx, imgs[start + i], co * m.CW, r * m.CH, m.CW, m.CH, PAD, adj, (grid || {}).cover);
       }
       sheets.push(c.toDataURL('image/jpeg', 0.92));
     }

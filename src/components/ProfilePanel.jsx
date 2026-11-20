@@ -1,11 +1,15 @@
 import { useState, useEffect } from 'react';
 import { changeOwnPassword } from '../services/adminService.js';
-import { performLogout } from '../services/authService.js';
+import { performLogout, requestPasswordReset, daysLeft } from '../services/authService.js';
+import { getConversation, sendMessage } from '../services/messageService.js';
+
 
 export default function ProfilePanel({ session, isAdmin, setView, adminMsgs, setAdminMsgs, isExpiredSession, msgText, setMsgText, scrollToTab, panelCount }) {
   const [pwCurrent, setPwCurrent] = useState('');
   const [pwNew, setPwNew] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [reqNote, setReqNote] = useState('');
+  const [reqMsg, setReqMsg] = useState('');
 
   useEffect(() => {
     if (session && !isAdmin) {
@@ -61,6 +65,11 @@ export default function ProfilePanel({ session, isAdmin, setView, adminMsgs, set
             <div className="header"><h2>My Profile</h2></div>
             <div className="profile-card">
               <div className="profile-avatar">{initials}</div>
+              {(() => { const d = daysLeft(session.expiry_date); return d === null ? null : (
+                <div className={'profile-trial' + (d <= 0 ? ' over' : d <= 2 ? ' soon' : '')}>
+                  {d <= 0 ? 'Trial ended · printing locked' : d + ' day' + (d === 1 ? '' : 's') + ' of trial left'}
+                </div>
+              ); })()}
               <div className="profile-name">{session.first_name || ''} {session.last_name || ''}</div>
               <div className="profile-user">{session.username}</div>
             </div>
@@ -69,6 +78,18 @@ export default function ProfilePanel({ session, isAdmin, setView, adminMsgs, set
               <input className="admin-input" type="password" placeholder="New password" value={pwNew} onChange={(e) => setPwNew(e.target.value)} />
             </div>
             <button className="print-btn active" onClick={doChangePw}>🔑 Change Password</button>
+            {!isAdmin && (
+              <div className="pw-request">
+                <div className="pwr-head"><span>🔑</span><b>Forgot it? Ask your admin</b></div>
+                <input className="admin-input" placeholder="Optional note for the admin…" value={reqNote} onChange={e => setReqNote(e.target.value)} />
+                <button className="print-btn" onClick={async () => {
+                  const r = await requestPasswordReset(session.username, reqNote);
+                  setReqMsg(r.msg);
+                  if (r.ok) setReqNote('');
+                }}>Send reset request</button>
+                {reqMsg && <div className="pwr-msg">{reqMsg}</div>}
+              </div>
+            )}
             <button className="print-btn" style={{ marginTop: '12px', color: '#dc2626', background: 'rgba(239,68,68,0.08)', borderColor: 'rgba(239,68,68,0.3)', cursor: 'pointer' }} onClick={doLogout}>
               🚪 Logout
             </button>

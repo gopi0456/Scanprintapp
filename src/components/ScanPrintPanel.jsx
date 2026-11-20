@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { PRINT_SIZES, renderPdfToImages, cssToMm } from '../utils/imageUtils.js';
 import { composePrintPages, printImage, DEFAULT_ADJ } from '../utils/printEngine.js';
 import EditModal, { ANCHORS } from './EditModal.jsx';
+import { sendMessage } from '../services/messageService.js';
 
 function parseRange(str, max) {
   if (!str || !str.trim()) return Array.from({ length: max }, (_, i) => i);
@@ -16,7 +17,7 @@ function parseRange(str, max) {
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const r2 = v => Math.round(v * 100) / 100;
 
-export default function ScanPrintPanel({ isLoading, setIsLoading, loadProgress, setLoadProgress, loadMessage, setLoadMessage }) {
+export default function ScanPrintPanel({ isExpiredSession, session, isLoading, setIsLoading, loadProgress, setLoadProgress, loadMessage, setLoadMessage }) {
   const [printImages, setPrintImages] = useState([]);
   const [included, setIncluded] = useState([]);
   const [selectedSize, setSelectedSize] = useState('ID Card (CR80)');
@@ -35,6 +36,8 @@ export default function ScanPrintPanel({ isLoading, setIsLoading, loadProgress, 
   const [fillSheet, setFillSheet] = useState(true);
   const [previewPages, setPreviewPages] = useState([]);
   const [previewIdx, setPreviewIdx] = useState(0);
+  const [previewTotal, setPreviewTotal] = useState(0);
+  const touchX = useRef(null);
   const [pagesPerSheet, setPagesPerSheet] = useState(1);
   const [copies, setCopies] = useState(1);
   const [printDpi, setPrintDpi] = useState(300);
@@ -42,6 +45,8 @@ export default function ScanPrintPanel({ isLoading, setIsLoading, loadProgress, 
   const [adj, setAdj] = useState({ ...DEFAULT_ADJ });
   const [anchor, setAnchor] = useState('c');
   const [preview, setPreview] = useState(null);
+  const [trialBlocked, setTrialBlocked] = useState(false);
+  const [renewSent, setRenewSent] = useState(false);
   const [previewMeta, setPreviewMeta] = useState('');
   const [editOpen, setEditOpen] = useState(false);
   const debounceRef = useRef(null);
@@ -50,40 +55,47 @@ export default function ScanPrintPanel({ isLoading, setIsLoading, loadProgress, 
   const isFullPageMode = selectedSize === 'A4' || selectedSize === '4x6 Photo';
   const isDoubleA4 = selectedSize === 'A4' && sideMode === 'double';
   const activeImages = printImages.filter((_, i) => included[i]);
-  const previewPageKey = (selectedSize === 'ID Card (CR80)' || selectedSize === 'Passport (2x2)' || selectedSize.startsWith('Stamp')) ? (selectedSize === 'ID Card (CR80)' ? 'A4' : passportPaperSize) : selectedSize;
+  const previewPageKey = (selectedSize === 'ID Card (CR80)' || selectedSize === 'Passport (2x2)' || selectedSize.startsWith('Stamp') || selectedSize === '4x6 Photo' || selectedSize === 'Passport + Stamp Mix') ? (selectedSize === 'ID Card (CR80)' ? 'A4' : passportPaperSize) : selectedSize;
   const pwMm = cssToMm(PRINT_SIZES[previewPageKey].cssWidth);
   const phMm = cssToMm(PRINT_SIZES[previewPageKey].cssHeight);
 
-  const opts = (forPreview) => ({ sizeKey: selectedSize, sideMode, passportPaper: passportPaperSize, passportCols, passportPerPage, passportPad, stampPad, stampPerPage, mixStamp, stampMode, mixedMode, pagesPerSheet, copies: forPreview ? 1 : copies, dpi: forPreview ? Math.min(printDpi, 150) : printDpi, adj, grid: { cols: gridCols, rows: gridRows, fill: fillSheet } });
+  const opts = (forPreview) => ({ sizeKey: selectedSize, sideMode, passportPaper: passportPaperSize, passportCols, passportPerPage, passportPad, stampPad, stampPerPage, mixStamp, stampMode, mixedMode, pagesPerSheet, copies: forPreview ? 1 : copies, dpi: forPreview ? Math.min(printDpi, 150) : printDpi, adj, grid: { cols: gridCols, rows: gridRows, fill: selectedSize === '4x6 Photo' ? false : fillSheet } });
 
   useEffect(() => {
-    if (activeImages.length === 0) { setPreview(null); return; }
+    if (activeImages.length === 0) { setPreview(null); setPreviewTotal(0); return; }
     clearTimeout(debounceRef.current);
     const token = ++renderToken.current;
     debounceRef.current = setTimeout(async () => {
       try {
         const idx = parseRange(rangeInput, activeImages.length);
         const imgs = idx.map(i => activeImages[i]);
-        const limit = selectedSize === 'ID Card (CR80)' ? 2 : (selectedSize.startsWith('Stamp') || selectedSize === 'Passport (2x2)') ? 4 : Math.max(2, pagesPerSheet);
-        const { pages } = await composePrintPages(imgs.slice(0, limit), opts(true));
-        if (token !== renderToken.current) return;
-        setPreviewPages(pages);
-        setPreviewIdx(0);
-        setPreview(pages[0] || null);
-        setPreviewMeta(selectedSize === 'ID Card (CR80)' ? 'Side-by-side • edits apply to every sheet' : (pages.length > 1 ? pages.length + ' sheets • ' : '1 sheet • ') + 'edits apply to all ' + imgs.length + ' pages');
+        const isFullSingle = selectedSize === 'A4';
+        if (isFullSingle) {
+          const total = imgs.length;
+          const at = Math.max(0, Math.min(previewIdx, total - 1));
+          const { pages } = await composePrintPages(imgs.slice(at, at + 1), opts(true));
+          if (token !== renderToken.current) return;
+          setPreviewTotal(total);
+          setPreview(pages[0] || null);
+          setPreviewMeta(total + (total > 1 ? ' sheets • ' : ' sheet • ') + 'edits apply to all ' + imgs.length + ' pages');
+        } else {
+          const limit = selectedSize === 'ID Card (CR80)' ? 2
+            : (selectedSize.startsWith('Stamp') || selectedSize === 'Passport (2x2)' || selectedSize === '4x6 Photo') ? Math.min(activeImages.length, 24)
+            : Math.max(2, pagesPerSheet);
+          const { pages } = await composePrintPages(imgs.slice(0, limit), opts(true));
+          if (token !== renderToken.current) return;
+          setPreviewTotal(pages.length);
+          setPreview(pages[Math.max(0, Math.min(previewIdx, pages.length - 1))] || null);
+          setPreviewMeta(pages.length + (pages.length > 1 ? ' sheets • ' : ' sheet • ') + 'edits apply to all ' + imgs.length + ' pages');
+        }
       } catch (e) { console.warn('preview', e); }
     }, 120);
     return () => clearTimeout(debounceRef.current);
-  }, [printImages, included, selectedSize, sideMode, passportPaperSize, passportCols, passportPerPage, passportPad, stampPad, stampPerPage, mixStamp, stampMode, mixedMode, pagesPerSheet, printDpi, rangeInput, adj, gridCols, gridRows, fillSheet]);
-
-  /* __sheetSync__ */
-  useEffect(() => {
-    if (previewPages.length) setPreview(previewPages[Math.min(previewIdx, previewPages.length - 1)] || null);
-  }, [previewIdx, previewPages]);
+  }, [printImages, included, selectedSize, sideMode, passportPaperSize, passportCols, passportPerPage, passportPad, stampPad, stampPerPage, mixStamp, stampMode, mixedMode, pagesPerSheet, printDpi, rangeInput, adj, previewIdx, gridCols, gridRows, fillSheet]);
 
   const set = (k, v) => setAdj(a => ({ ...a, [k]: v }));
   const applyZoom = (nz) => setAdj(a => { const z = clamp(nz, 0.2, 4); const [ax, ay] = ANCHORS[anchor]; return { ...a, zoom: r2(z), x: Math.round(clamp(a.x + ax * (a.zoom - z) * 100, -60, 60)), y: Math.round(clamp(a.y + ay * (a.zoom - z) * 100, -60, 60)) }; });
-  const addImages = (urls) => { setPrintImages(p => [...p, ...urls]); setIncluded(p => [...p, ...urls.map(() => true)]); };
+  const addImages = (urls) => { setPrintImages(p => [...p, ...urls]); setIncluded(p => [...p, ...urls.map(() => true)]); setAdj({ ...DEFAULT_ADJ }); setPreviewIdx(0); };
   const toggle = (i) => setIncluded(p => p.map((v, k) => k === i ? !v : v));
 
   const takePhoto = async () => { try { const { Camera, CameraResultType } = await import('@capacitor/camera'); const im = await Camera.getPhoto({ quality: 100, allowEditing: false, resultType: CameraResultType.DataUrl }); addImages([im.dataUrl]); } catch (e) { alert('Camera requires a physical device.'); } };
@@ -101,6 +113,7 @@ export default function ScanPrintPanel({ isLoading, setIsLoading, loadProgress, 
   };
 
   const handlePrint = async () => {
+    if (isExpiredSession) { setTrialBlocked(true); return; }
     if (activeImages.length === 0) return alert('Select at least one photo.');
     const idx = parseRange(rangeInput, activeImages.length); if (idx.length === 0) return alert('Invalid range.');
     setIsLoading(true); setLoadProgress(0); setLoadMessage('Composing pages...');
@@ -146,7 +159,7 @@ export default function ScanPrintPanel({ isLoading, setIsLoading, loadProgress, 
           <div>
             <div className="count-bar"><span className="count-chip">📄 {activeImages.length}/{printImages.length} selected</span>
               <button className="clear-btn" onClick={() => { setPrintImages([]); setIncluded([]); setRangeInput(''); setPreview(null); }}>Clear All</button></div>
-            <div className="thumb-strip">{printImages.map((img, i) => (
+            <div className="thumb-strip hscroll">{printImages.map((img, i) => (
               <button key={i} className={'thumb' + (included[i] ? '' : ' off')} onClick={() => toggle(i)}>
                 <img src={img} alt={'p' + (i + 1)} /><span className="thumb-mark">{included[i] ? '✓' : '✕'}</span><span className="thumb-num">{i + 1}</span>
               </button>))}</div>
@@ -159,24 +172,65 @@ export default function ScanPrintPanel({ isLoading, setIsLoading, loadProgress, 
             <div className="workflow-card settings-card">
               <div className="card-content" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '4px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}><span className="icon">🔖</span>
-                  <input className="neon-input wide" placeholder="All pages (e.g. 1-3, 5, 7-9)" value={rangeInput} onChange={e => setRangeInput(e.target.value)} /></div>
+                  <input className="neon-input wide" placeholder="All pages (e.g. 1-3, 5, 7-9)" value={rangeInput} onChange={e => setRangeInput(e.target.value)} />
+                </div>
                 <span className="range-hint">Leave empty = all selected</span>
               </div>
               <div className="check-icon">✓</div>
             </div>
+        <div className="workflow-card settings-card">
+          <div className="card-content"><span className="icon">🔢</span>
+            <div className="parity-chips">
+                  <button className={'pc' + (rangeInput === '' ? ' on' : '')} onClick={() => setRangeInput('')}>All</button>
+                  <button className="pc" onClick={() => setRangeInput(Array.from({ length: activeImages.length }, (_, i) => i + 1).filter(n => n % 2 === 1).join(','))}>Odd pages</button>
+                  <button className="pc" onClick={() => setRangeInput(Array.from({ length: activeImages.length }, (_, i) => i + 1).filter(n => n % 2 === 0).join(','))}>Even pages</button>
+                </div>
+          </div>
+          <div className="check-icon">✓</div>
+        </div>
           </div>
         )}
 
+        {isExpiredSession && (
+          <div className="trial-strip">
+            <span className="ts-ico">⏳</span>
+            <div className="ts-txt"><b>Your trial has ended</b><i>You can still sign in and preview. Printing unlocks once your admin extends access.</i></div>
+            <button className="ts-btn" disabled={renewSent} onClick={async () => {
+              try {
+                await sendMessage(session ? session.username : 'user', 'admin@scanprint.app', '[ACCESS] Please extend my printing access.');
+                setRenewSent(true);
+              } catch (e) { setRenewSent(true); }
+            }}>{renewSent ? 'Request sent ✓' : 'Request access'}</button>
+          </div>
+        )}
+        {trialBlocked && (
+          <div className="trial-modal" onClick={() => setTrialBlocked(false)}>
+            <div className="tm-card" onClick={e => e.stopPropagation()}>
+              <span className="tm-ico">🔒</span>
+              <b>Printing is locked</b>
+              <i>Your {session && session.expiry_date ? 'trial ended on ' + new Date(session.expiry_date).toLocaleDateString() : 'trial has ended'}. Ask your admin to extend access — everything else keeps working.</i>
+              <div className="tm-acts">
+                <button onClick={() => setTrialBlocked(false)}>Keep previewing</button>
+                <button className="ghost" onClick={async () => {
+                  try {
+                    await sendMessage(session ? session.username : 'user', 'admin@scanprint.app', '[ACCESS] Please extend my printing access.');
+                  } catch (e) {}
+                  setRenewSent(true); setTrialBlocked(false);
+                }}>{renewSent ? 'Already requested' : 'Message admin'}</button>
+              </div>
+            </div>
+          </div>
+        )}
         <div className="workflow-cards" style={{ marginBottom: 0 }}>
           <div className="workflow-card settings-card">
             <div className="card-content"><span className="icon">📄</span>
-              <select value={selectedSize} onChange={e => { const v = e.target.value; setSelectedSize(v); if (v === 'Stamp (20x25)') { setStampPerPage(110); setGridCols(10); setGridRows(11); } else if (v === 'Stamp (25x30)') { setStampPerPage(72); setGridCols(8); setGridRows(9); } else if (v === 'Passport (2x2)') { setPassportPerPage(36); setMixStamp('none'); setStampPerPage(0); setGridCols(6); setGridRows(6); } }} className="neon-select">{Object.keys(PRINT_SIZES).map(s => <option key={s} value={s}>{s}</option>)}</select>
+              <select value={selectedSize} onChange={e => { const v = e.target.value; setSelectedSize(v); setAdj({ ...DEFAULT_ADJ }); setPreviewIdx(0); if (v === 'Stamp (20x25)') { setStampPerPage(110); setGridCols(10); setGridRows(11); } else if (v === 'Stamp (25x30)') { setStampPerPage(72); setGridCols(8); setGridRows(9); } else if (v === 'Passport (2x2)') { setPassportPerPage(36); setMixStamp('none'); setStampPerPage(0); setGridCols(6); setGridRows(6); } }} className="neon-select">{Object.keys(PRINT_SIZES).map(s => <option key={s} value={s}>{s}</option>)}</select>
             </div>
             <div className="check-icon">✓</div>
           </div>
         </div>
 
-        {(selectedSize === 'Stamp (20x25)' || selectedSize === 'Stamp (25x30)') && (
+        {(selectedSize === 'Stamp (20x25)' || selectedSize === 'Stamp (25x30)' || selectedSize === '4x6 Photo') && (
           <div className="passport-settings">
             <div className="sheet-bank">
               <div className="sheet-bank-head"><span>🧭 Sheet layout</span><i>{fillSheet ? 'fill one sheet' : 'exact ISO · spills to more sheets'}</i></div>
@@ -235,8 +289,8 @@ export default function ScanPrintPanel({ isLoading, setIsLoading, loadProgress, 
                   {(() => {
                     const pp = PRINT_SIZES[passportPaperSize] || PRINT_SIZES['A4'];
                     const wmm = cssToMm(pp.cssWidth), hmm = cssToMm(pp.cssHeight);
-                    const isoW = selectedSize === 'Stamp (20x25)' ? 20 : selectedSize === 'Stamp (25x30)' ? 25 : 35;
-                    const isoH = selectedSize === 'Stamp (20x25)' ? 25 : selectedSize === 'Stamp (25x30)' ? 30 : 45;
+                    const isoW = selectedSize === 'Stamp (20x25)' ? 20 : selectedSize === 'Stamp (25x30)' ? 25 : selectedSize === '4x6 Photo' ? 101.6 : 35;
+                    const isoH = selectedSize === 'Stamp (20x25)' ? 25 : selectedSize === 'Stamp (25x30)' ? 30 : selectedSize === '4x6 Photo' ? 152.4 : 45;
                     const iCols = Math.max(1, Math.floor(wmm / isoW + 1e-4));
                     const iRows = Math.max(1, Math.floor(hmm / isoH + 1e-4));
                     const cw = fillSheet ? wmm / gridCols : isoW;
@@ -474,17 +528,27 @@ export default function ScanPrintPanel({ isLoading, setIsLoading, loadProgress, 
         {preview && (
           <div className="preview-card">
             <div className="preview-head"><span>👁️ Live preview</span><span className="preview-meta">{previewMeta}</span></div>
-            <div className="preview-stage" style={{ aspectRatio: pwMm + ' / ' + phMm }}><img src={preview} alt="Print preview" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} /></div>
-            {previewPages.length > 1 && (
+            <div className="preview-stage" style={{ aspectRatio: pwMm + ' / ' + phMm }}
+              onTouchStart={e => { touchX.current = e.touches[0].clientX; }}
+              onTouchEnd={e => {
+                if (touchX.current == null) return;
+                const dx = e.changedTouches[0].clientX - touchX.current;
+                touchX.current = null;
+                if (Math.abs(dx) < 40) return;
+                setPreviewIdx(i => Math.max(0, Math.min(previewPages.length - 1, i + (dx < 0 ? 1 : -1))));
+              }}>
+              <img src={preview} alt="Print preview" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
+            </div>
+            {previewTotal > 1 && (
               <div className="sheet-nav">
                 <button className="sn-arrow" disabled={previewIdx === 0} onClick={() => setPreviewIdx(i => Math.max(0, i - 1))}>‹</button>
                 <div className="sn-dots">
-                  {previewPages.map((_, i) => (
+                  {Array.from({ length: previewTotal }, (_, i) => (
                     <button key={i} className={'sn-dot' + (i === previewIdx ? ' on' : '')} onClick={() => setPreviewIdx(i)} aria-label={'Sheet ' + (i + 1)} />
                   ))}
                 </div>
-                <span className="sn-label">Sheet {previewIdx + 1} / {previewPages.length}</span>
-                <button className="sn-arrow" disabled={previewIdx >= previewPages.length - 1} onClick={() => setPreviewIdx(i => Math.min(previewPages.length - 1, i + 1))}>›</button>
+                <span className="sn-label">Sheet {previewIdx + 1} / {previewTotal}</span>
+                <button className="sn-arrow" disabled={previewIdx >= previewTotal - 1} onClick={() => setPreviewIdx(i => Math.min(previewTotal - 1, i + 1))}>›</button>
               </div>
             )}
 
@@ -500,7 +564,15 @@ export default function ScanPrintPanel({ isLoading, setIsLoading, loadProgress, 
               <div className="em-anchor-grid">
                 {Object.keys(ANCHORS).map(k => <button key={k} className={'em-anchor' + (anchor === k ? ' on' : '')} onClick={() => setAnchor(k)} title={k} />)}
               </div>
-              {inlineControl('Zoom', 'zoom', 0.2, 4, 0.05, '×', true)}
+              {<div className="adj-row">
+      <span className="adj-label">Zoom</span>
+      <input type="range" min="-80" max="200" step="5" value={Math.round((adj.zoom - 1) * 100)} onChange={e => setAdj(a => ({ ...a, zoom: Math.max(0.2, Math.min(3, 1 + parseFloat(e.target.value) / 100)) }))} />
+      <button className="em-step" onClick={() => applyZoom(adj.zoom - 0.05)}>−</button>
+      <input type="number" className="adj-num" min="-80" max="200" step="5" value={Math.round((adj.zoom - 1) * 100)} onChange={e => setAdj(a => ({ ...a, zoom: Math.max(0.2, Math.min(3, 1 + (parseFloat(e.target.value) || 0) / 100)) }))} />
+      <button className="em-step" onClick={() => applyZoom(adj.zoom + 0.05)}>+</button>
+      <span className="adj-unit">% · 0 = original</span>
+      <button className="em-step" title="Reset to original" onClick={() => setAdj({ ...DEFAULT_ADJ })}>⟲</button>
+    </div>}
               {inlineControl('Move X', 'x', -60, 60, 1, '%')}
               {inlineControl('Move Y', 'y', -60, 60, 1, '%')}
               {inlineControl('Rotate', 'rot', -180, 180, 1, '°')}
